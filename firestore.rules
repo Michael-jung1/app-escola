@@ -1,0 +1,15 @@
+rules_version = '2';
+
+// Estas regras continuam funcionando sem alteração após a migração para Clerk:
+// o custom token gerado em api/firebase-token.js usa o MESMO uid do Clerk como
+// "sub" do token do Firebase, então request.auth.uid aqui é o userId do Clerk.
+//
+// Para aplicar: Firebase Console -> Firestore Database -> Regras -> cole este
+// conteúdo -> Publicar.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}

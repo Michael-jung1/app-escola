@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+  Tema claro: em vez de reescrever cada classe Tailwind do app (que foi todo
+  construído com cores "slate" fixas para o modo escuro), sobrepomos essas
+  mesmas classes quando o elemento estiver dentro de .theme-light.
+  Isso é aplicado só quando o usuário ativa o tema claro no botão do cabeçalho.
+*/
+.theme-light {
+  color-scheme: light;
+}
+
+.theme-light.bg-slate-900,
+.theme-light .bg-slate-900 { background-color: #f1f5f9 !important; }
+
+.theme-light.bg-slate-800,
+.theme-light .bg-slate-800 { background-color: #ffffff !important; }
+
+.theme-light .bg-slate-700,
+.theme-light .bg-slate-600 { background-color: #e2e8f0 !important; }
+
+.theme-light .bg-slate-700\/50 { background-color: rgba(226, 232, 240, 0.6) !important; }
+.theme-light .bg-slate-700\/30 { background-color: rgba(226, 232, 240, 0.4) !important; }
+
+.theme-light .border-slate-700,
+.theme-light .border-slate-600,
+.theme-light .border-slate-500,
+.theme-light .border-slate-800 { border-color: #cbd5e1 !important; }
+
+.theme-light .text-white,
+.theme-light.text-white { color: #0f172a !important; }
+
+.theme-light .text-slate-100 { color: #1e293b !important; }
+.theme-light .text-slate-200 { color: #334155 !important; }
+.theme-light .text-slate-300 { color: #475569 !important; }
+.theme-light .text-slate-400 { color: #64748b !important; }
+.theme-light .text-slate-500 { color: #94a3b8 !important; }
+
+/* Botões de navegação ativos/hover continuam legíveis no claro */
+.theme-light .hover\:text-slate-200:hover { color: #1e293b !important; }
+.theme-light .hover\:bg-slate-700:hover,
+.theme-light .hover\:bg-slate-600:hover { background-color: #e2e8f0 !important; }
+.theme-light .hover\:bg-slate-700\/50:hover { background-color: rgba(226, 232, 240, 0.6) !important; }
+
+/* Modais e overlays: o fundo preto semitransparente continua igual nos dois temas */
