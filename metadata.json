@@ -1,0 +1,6 @@
+{
+  "name": "StudyApp - Organização Escolar",
+  "description": "Organize aulas, trabalhos e provas da escola em um só lugar com calendário, notas e modo foco Pomodoro.",
+  "permissions": [],
+  "capabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

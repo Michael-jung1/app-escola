@@ -1,14 +1,14 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   BookOpen, Calendar, CheckSquare, Clock, GraduationCap, Home,
-  Plus, Settings, Trash2, X, ChevronRight, ChevronLeft, AlertCircle, Edit2,
+  Plus, Trash2, X, ChevronRight, ChevronLeft, AlertCircle, Edit2,
   CheckCircle2, Circle, Timer, Bell, User, Play, Pause, RefreshCw, LogOut, FileText,
   Search, Sun, Moon, Download, Calculator, CalendarDays
 } from 'lucide-react';
-import { useUser, useClerk } from '@clerk/clerk-react';
+import { useUser, useClerk } from './lib/clerkAuth';
 import {
   collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, writeBatch
-} from 'firebase/firestore';
+} from './lib/firebaseStore';
 import { db } from './lib/firebase';
 import { useFirebaseSync } from './lib/useFirebaseSync';
 
@@ -39,7 +39,7 @@ export default function StudyCompanionApp() {
   const [editingClass, setEditingClass] = useState(null);
   const [editingTask, setEditingTask] = useState(null);
   const [editingExam, setEditingExam] = useState(null);
-  const [isSavingItem, setIsSavingItem] = useState(false);
+  const [_isSavingItem, setIsSavingItem] = useState(false);
 
   // Guarda o item que está pedindo confirmação antes de excluir
   // formato: { type: 'classes' | 'tasks' | 'exams', id, label }
@@ -125,9 +125,11 @@ export default function StudyCompanionApp() {
 
   // Mantém o resto do arquivo funcionando sem reescrever cada `user.uid`/`user.email`:
   // aqui simulamos o formato do antigo objeto `user` do Firebase, mas value vem do Clerk.
-  const user = isSignedIn && firebaseReady
-    ? { uid: clerkUser.id, email: clerkUser.primaryEmailAddress?.emailAddress || '' }
-    : null;
+  const user = useMemo(() => {
+    return isSignedIn && firebaseReady && clerkUser
+      ? { uid: clerkUser.id, email: clerkUser.primaryEmailAddress?.emailAddress || '' }
+      : null;
+  }, [isSignedIn, firebaseReady, clerkUser]);
   const loading = !clerkLoaded || (isSignedIn && !firebaseReady && !syncError);
 
   const handleLogout = async () => {

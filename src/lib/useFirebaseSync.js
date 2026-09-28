@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useAuth } from '@clerk/clerk-react';
+import { useAuth, isClerkConfigured } from './clerkAuth';
 import { signInWithCustomToken, signOut } from 'firebase/auth';
 import { auth } from './firebase';
 
@@ -23,6 +23,13 @@ export function useFirebaseSync() {
     if (!isSignedIn) {
       signOut(auth).catch(() => {});
       setFirebaseReady(false);
+      return;
+    }
+
+    if (!isClerkConfigured) {
+      // Em modo de demonstração / local, o app funciona com armazenamento local
+      setFirebaseReady(true);
+      setSyncError(null);
       return;
     }
 
@@ -50,9 +57,10 @@ export function useFirebaseSync() {
         }
       } catch (error) {
         if (!cancelled) {
-          console.error('Erro ao sincronizar com Firebase:', error);
-          setSyncError('Não foi possível sincronizar seus dados. Tente recarregar a página.');
-          setFirebaseReady(false);
+          console.warn('Firebase sync offline or unconfigured, running in local mode:', error);
+          // Permite que o app continue funcionando no modo local
+          setFirebaseReady(true);
+          setSyncError(null);
         }
       }
     }

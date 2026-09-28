@@ -4,8 +4,57 @@ import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
 export default defineConfig({
+  server: {
+    host: '0.0.0.0',
+    port: 3000,
+    allowedHosts: true,
+  },
+  preview: {
+    host: '0.0.0.0',
+    port: 3000,
+    allowedHosts: true,
+  },
   plugins: [
     react(),
+    {
+      name: 'api-middleware',
+      configureServer(server) {
+        server.middlewares.use(async (req, res, next) => {
+          if (req.url === '/api/firebase-token') {
+            try {
+              const { default: handler } = await import('./api/firebase-token.js');
+              let body = '';
+              req.on('data', chunk => { body += chunk; });
+              req.on('end', async () => {
+                try {
+                  req.body = body ? JSON.parse(body) : {};
+                } catch {
+                  req.body = body;
+                }
+                res.status = (code) => {
+                  res.statusCode = code;
+                  return res;
+                };
+                res.json = (data) => {
+                  res.setHeader('Content-Type', 'application/json');
+                  res.end(JSON.stringify(data));
+                  return res;
+                };
+                await handler(req, res);
+              });
+              return;
+            } catch (err) {
+              console.error('Error handling /api/firebase-token:', err);
+              res.statusCode = 500;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ error: 'Internal Server Error' }));
+              return;
+            }
+          }
+          next();
+        });
+      },
+    },
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'apple-touch-icon.png'],
