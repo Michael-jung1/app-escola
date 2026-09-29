@@ -6,28 +6,11 @@ import {
   updateDoc as realUpdateDoc,
   deleteDoc as realDeleteDoc,
   writeBatch as realWriteBatch,
+  getDocs as realGetDocs,
 } from 'firebase/firestore';
-import { auth } from './firebase';
+import { db, auth } from './firebase';
 
 const listeners = new Map();
-
-function emitChange(userId, collectionName) {
-  const key = `${userId}:${collectionName}`;
-  const subs = listeners.get(key);
-  if (subs) {
-    const data = getLocalCollection(userId, collectionName);
-    const snapshot = {
-      docs: data.map(item => ({
-        id: item.id,
-        data: () => {
-          const { id: _, ...rest } = item;
-          return rest;
-        },
-      })),
-    };
-    subs.forEach(cb => cb(snapshot));
-  }
-}
 
 const DEFAULT_SEED_DATA = {
   classes: [
@@ -87,23 +70,37 @@ const DEFAULT_SEED_DATA = {
   ],
 };
 
+function normalizeUser(userId) {
+  return userId || auth.currentUser?.uid || 'estudante-demo';
+}
+
+function assertUserAuthorization(requestedUserId) {
+  if (auth.currentUser && requestedUserId && requestedUserId !== auth.currentUser.uid) {
+    throw new Error('PERMISSION_DENIED: Tentativa não autorizada de acessar dados de outro usuário.');
+  }
+}
+
+function getStorageKey(userId, collectionName) {
+  return `studyapp_data_${normalizeUser(userId)}_${collectionName}`;
+}
+
 function getLocalCollection(userId, collectionName) {
-  const storageKey = `studyapp_data_${userId}_${collectionName}`;
+  const storageKey = getStorageKey(userId, collectionName);
   try {
     const raw = localStorage.getItem(storageKey);
     if (!raw) {
-      const seed = DEFAULT_SEED_DATA[collectionName] || [];
+      const seed = JSON.parse(JSON.stringify(DEFAULT_SEED_DATA[collectionName] || []));
       localStorage.setItem(storageKey, JSON.stringify(seed));
       return seed;
     }
     return JSON.parse(raw);
   } catch {
-    return DEFAULT_SEED_DATA[collectionName] || [];
+    return JSON.parse(JSON.stringify(DEFAULT_SEED_DATA[collectionName] || []));
   }
 }
 
 function saveLocalCollection(userId, collectionName, items) {
-  const storageKey = `studyapp_data_${userId}_${collectionName}`;
+  const storageKey = getStorageKey(userId, collectionName);
   try {
     localStorage.setItem(storageKey, JSON.stringify(items));
   } catch (e) {
@@ -112,69 +109,128 @@ function saveLocalCollection(userId, collectionName, items) {
   emitChange(userId, collectionName);
 }
 
+function emitChange(userId, collectionName) {
+  const normUser = normalizeUser(userId);
+  const key = `${normUser}:${collectionName}`;
+  const subs = listeners.get(key);
+  if (subs && subs.size > 0) {
+    const data = getLocalCollection(normUser, collectionName);
+    const snapshot = {
+      docs: data.map(item => ({
+        id: String(item.id),
+        data: () => {
+          const { id: _, ...rest } = item;
+          return rest;
+        },
+      })),
+    };
+    subs.forEach(cb => {
+      try {
+        cb(snapshot);
+      } catch (err) {
+        console.error('Error in listener callback:', err);
+      }
+    });
+  }
+}
+
 export function collection(firstArg, ...segments) {
+  let allParts = [];
+  for (const seg of segments) {
+    if (typeof seg === 'string') {
+      allParts.push(...seg.split('/').filter(Boolean));
+    }
+  }
+
+  let userId = 'estudante-demo';
+  let collectionName = '';
+
+  if (allParts.length >= 3 && allParts[0] === 'users') {
+    userId = allParts[1] || 'estudante-demo';
+    collectionName = allParts[2] || '';
+  } else if (allParts.length === 2 && allParts[0] === 'users') {
+    userId = allParts[1] || 'estudante-demo';
+  } else if (allParts.length === 1) {
+    collectionName = allParts[0];
+  } else if (allParts.length > 0) {
+    collectionName = allParts[allParts.length - 1];
+  }
+
+  assertUserAuthorization(userId);
+
   if (auth.currentUser) {
     return realCollection(firstArg, ...segments);
   }
 
-  let userId = '';
-  let collectionName = '';
-  if (segments.length >= 3 && segments[0] === 'users') {
-    userId = segments[1];
-    collectionName = segments[2];
-  } else if (segments.length === 1) {
-    collectionName = segments[0];
-  }
-
   return {
     _isLocal: true,
-    userId,
+    userId: normalizeUser(userId),
     collectionName,
   };
 }
 
 export function doc(firstArg, ...segments) {
+  if (firstArg?._isLocal) {
+    assertUserAuthorization(firstArg.userId);
+    const docId = segments[0] || 'local_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+    return {
+      _isLocal: true,
+      userId: normalizeUser(firstArg.userId),
+      collectionName: firstArg.collectionName,
+      id: String(docId),
+    };
+  }
+
+  let allParts = [];
+  for (const seg of segments) {
+    if (typeof seg === 'string') {
+      allParts.push(...seg.split('/').filter(Boolean));
+    } else if (seg) {
+      allParts.push(String(seg));
+    }
+  }
+
+  let userId = 'estudante-demo';
+  let collectionName = '';
+  let docId = '';
+
+  if (allParts.length >= 4 && allParts[0] === 'users') {
+    userId = allParts[1];
+    collectionName = allParts[2];
+    docId = allParts[3];
+  } else if (allParts.length === 2) {
+    collectionName = allParts[0];
+    docId = allParts[1];
+  } else if (allParts.length === 3 && allParts[0] === 'users') {
+    userId = allParts[1];
+    docId = allParts[2];
+  } else if (allParts.length === 1) {
+    docId = allParts[0];
+  }
+
+  assertUserAuthorization(userId);
+
   if (auth.currentUser) {
     return realDoc(firstArg, ...segments);
   }
 
-  if (firstArg?._isLocal) {
-    const docId = segments[0] || 'local_' + Math.random().toString(36).substring(2, 9);
-    return {
-      _isLocal: true,
-      userId: firstArg.userId,
-      collectionName: firstArg.collectionName,
-      id: docId,
-    };
-  }
-
-  let userId = '';
-  let collectionName = '';
-  let docId = '';
-
-  if (segments.length >= 4 && segments[0] === 'users') {
-    userId = segments[1];
-    collectionName = segments[2];
-    docId = segments[3];
-  } else if (segments.length === 2) {
-    collectionName = segments[0];
-    docId = segments[1];
-  }
-
   return {
     _isLocal: true,
-    userId,
+    userId: normalizeUser(userId),
     collectionName,
-    id: docId || 'local_' + Math.random().toString(36).substring(2, 9),
+    id: String(docId || 'local_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7)),
   };
 }
 
 export function onSnapshot(ref, onNext, onError) {
+  assertUserAuthorization(ref.userId);
+
   if (auth.currentUser && !ref._isLocal) {
     return realOnSnapshot(ref, onNext, onError);
   }
 
-  const { userId, collectionName } = ref;
+  const userId = normalizeUser(ref.userId);
+  const collectionName = ref.collectionName;
   const key = `${userId}:${collectionName}`;
 
   if (!listeners.has(key)) {
@@ -183,19 +239,21 @@ export function onSnapshot(ref, onNext, onError) {
   const set = listeners.get(key);
   set.add(onNext);
 
-  // Initial trigger asynchronously
-  setTimeout(() => {
-    const data = getLocalCollection(userId, collectionName);
+  // Send current data immediately
+  const data = getLocalCollection(userId, collectionName);
+  try {
     onNext({
       docs: data.map(item => ({
-        id: item.id,
+        id: String(item.id),
         data: () => {
           const { id: _, ...rest } = item;
           return rest;
         },
       })),
     });
-  }, 0);
+  } catch (err) {
+    console.error('Error during initial snapshot dispatch:', err);
+  }
 
   return () => {
     set.delete(onNext);
@@ -203,11 +261,14 @@ export function onSnapshot(ref, onNext, onError) {
 }
 
 export async function addDoc(collectionRef, data) {
+  assertUserAuthorization(collectionRef.userId);
+
   if (auth.currentUser && !collectionRef._isLocal) {
     return await realAddDoc(collectionRef, data);
   }
 
-  const { userId, collectionName } = collectionRef;
+  const userId = normalizeUser(collectionRef.userId);
+  const collectionName = collectionRef.collectionName;
   const items = getLocalCollection(userId, collectionName);
   const newId = 'item_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
   const newItem = { id: newId, ...data };
@@ -217,13 +278,17 @@ export async function addDoc(collectionRef, data) {
 }
 
 export async function updateDoc(docRef, data) {
+  assertUserAuthorization(docRef.userId);
+
   if (auth.currentUser && !docRef._isLocal) {
     return await realUpdateDoc(docRef, data);
   }
 
-  const { userId, collectionName, id } = docRef;
+  const userId = normalizeUser(docRef.userId);
+  const collectionName = docRef.collectionName;
+  const id = String(docRef.id);
   const items = getLocalCollection(userId, collectionName);
-  const index = items.findIndex(i => i.id === id);
+  const index = items.findIndex(i => String(i.id) === id);
   if (index !== -1) {
     items[index] = { ...items[index], ...data };
     saveLocalCollection(userId, collectionName, items);
@@ -231,13 +296,17 @@ export async function updateDoc(docRef, data) {
 }
 
 export async function deleteDoc(docRef) {
+  assertUserAuthorization(docRef.userId);
+
   if (auth.currentUser && !docRef._isLocal) {
     return await realDeleteDoc(docRef);
   }
 
-  const { userId, collectionName, id } = docRef;
+  const userId = normalizeUser(docRef.userId);
+  const collectionName = docRef.collectionName;
+  const id = String(docRef.id);
   const items = getLocalCollection(userId, collectionName);
-  const filtered = items.filter(i => i.id !== id);
+  const filtered = items.filter(i => String(i.id) !== id);
   saveLocalCollection(userId, collectionName, filtered);
 }
 
@@ -250,13 +319,17 @@ export function writeBatch(dbInstance) {
 
   return {
     set(docRef, data) {
+      assertUserAuthorization(docRef.userId);
       operations.push({ docRef, data });
     },
     async commit() {
       operations.forEach(({ docRef, data }) => {
-        const { userId, collectionName, id } = docRef;
+        assertUserAuthorization(docRef.userId);
+        const userId = normalizeUser(docRef.userId);
+        const collectionName = docRef.collectionName;
+        const id = String(docRef.id);
         const items = getLocalCollection(userId, collectionName);
-        const index = items.findIndex(i => i.id === id);
+        const index = items.findIndex(i => String(i.id) === id);
         if (index !== -1) {
           items[index] = { ...items[index], ...data };
         } else {
@@ -266,4 +339,21 @@ export function writeBatch(dbInstance) {
       });
     },
   };
+}
+
+export async function clearCollection(userId, collectionName) {
+  assertUserAuthorization(userId);
+  const normUser = normalizeUser(userId);
+  if (auth.currentUser) {
+    try {
+      const snap = await realGetDocs(realCollection(db, 'users', normUser, collectionName));
+      const batch = realWriteBatch(db);
+      snap.forEach(d => batch.delete(d.ref));
+      await batch.commit();
+    } catch (e) {
+      console.warn('Error clearing Firestore collection:', e);
+    }
+  }
+
+  saveLocalCollection(normUser, collectionName, []);
 }

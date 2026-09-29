@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { useUser, useClerk } from './lib/clerkAuth';
 import {
-  collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, writeBatch
+  collection, addDoc, updateDoc, deleteDoc, doc, onSnapshot, writeBatch, clearCollection
 } from './lib/firebaseStore';
 import { db } from './lib/firebase';
 import { useFirebaseSync } from './lib/useFirebaseSync';
@@ -52,6 +52,15 @@ export default function StudyCompanionApp() {
     if (actionErrorTimeoutRef.current) clearTimeout(actionErrorTimeoutRef.current);
     setActionError(msg);
     actionErrorTimeoutRef.current = setTimeout(() => setActionError(''), 4000);
+  };
+
+  // Toast de sucesso/informação amigável (sem alert bloqueante)
+  const [actionNotice, setActionNotice] = useState('');
+  const actionNoticeTimeoutRef = useRef(null);
+  const showActionNotice = (msg) => {
+    if (actionNoticeTimeoutRef.current) clearTimeout(actionNoticeTimeoutRef.current);
+    setActionNotice(msg);
+    actionNoticeTimeoutRef.current = setTimeout(() => setActionNotice(''), 4000);
   };
 
   // --- Notas/médias ---
@@ -276,6 +285,8 @@ export default function StudyCompanionApp() {
     const allDone = newSteps.length > 0 && newSteps.every(s => s.done);
     const newStatus = allDone ? 'concluído' : (newSteps.some(s => s.done) ? 'em andamento' : 'pendente');
 
+    setTasks(prev => prev.map(t => t.id === taskId ? { ...t, steps: newSteps, status: newStatus } : t));
+
     try {
       await updateDoc(doc(db, 'users', user.uid, 'tasks', taskId), {
         steps: newSteps,
@@ -296,6 +307,8 @@ export default function StudyCompanionApp() {
       idx === topicIndex ? { ...topic, done: !topic.done } : topic
     );
 
+    setExams(prev => prev.map(e => e.id === examId ? { ...e, topics: newTopics } : e));
+
     try {
       await updateDoc(doc(db, 'users', user.uid, 'exams', examId), { topics: newTopics });
     } catch (error) {
@@ -308,8 +321,33 @@ export default function StudyCompanionApp() {
     if (!user || !pendingDelete) return;
     const { type, id } = pendingDelete;
     setPendingDelete(null);
+
+    const targetUid = user.uid || 'estudante-demo';
+
+    // Exclusão de tudo em lote
+    if (id === 'ALL') {
+      if (type === 'classes') setClasses([]);
+      if (type === 'tasks') setTasks([]);
+      if (type === 'exams') setExams([]);
+      if (type === 'grades') setGrades([]);
+
+      try {
+        await clearCollection(targetUid, type);
+      } catch (error) {
+        console.error(error);
+        showActionError('Não foi possível excluir os itens. Verifique sua conexão.');
+      }
+      return;
+    }
+
+    // Atualização otimista imediata na interface
+    if (type === 'classes') setClasses(prev => prev.filter(c => c.id !== id));
+    if (type === 'tasks') setTasks(prev => prev.filter(t => t.id !== id));
+    if (type === 'exams') setExams(prev => prev.filter(e => e.id !== id));
+    if (type === 'grades') setGrades(prev => prev.filter(g => g.id !== id));
+
     try {
-      await deleteDoc(doc(db, 'users', user.uid, type, id));
+      await deleteDoc(doc(db, 'users', targetUid, type, id));
     } catch (error) {
       console.error(error);
       showActionError('Não foi possível excluir. Verifique sua conexão.');
@@ -378,16 +416,35 @@ export default function StudyCompanionApp() {
   };
 
   const handleImportJSON = (event) => {
-    const file = event.target.files[0];
+    const file = event.target.files?.[0];
     if (!file || !user) return;
+
+    // Limite rígido de tamanho de arquivo: máximo 2 MB
+    const MAX_FILE_SIZE = 2 * 1024 * 1024;
+    if (file.size > MAX_FILE_SIZE) {
+      showActionError('O arquivo selecionado excede o limite máximo seguro de 2 MB.');
+      event.target.value = '';
+      return;
+    }
 
     const reader = new FileReader();
     reader.onload = async (e) => {
       try {
-        const data = JSON.parse(e.target.result);
+        let data;
+        try {
+          data = JSON.parse(e.target.result);
+        } catch {
+          showActionError('O arquivo não contém um formato JSON válido.');
+          return;
+        }
 
         if (!Array.isArray(data)) {
-          alert("O arquivo precisa ser uma lista de horários (formato [...]). Gere o arquivo novamente pelo leitor de PDF.");
+          showActionError('O arquivo precisa ser uma lista de horários (formato [...]).');
+          return;
+        }
+
+        if (data.length > 500) {
+          showActionError('O arquivo contém linhas em excesso (limite máximo de 500 registros).');
           return;
         }
         
@@ -395,45 +452,59 @@ export default function StudyCompanionApp() {
           "13:00": "13:45", "13:45": "14:30", "14:30": "15:30", 
           "15:30": "16:15", "16:15": "17:00", "17:00": "17:45"
         };
-        const dias = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta"];
+        const diasValidos = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta"];
+        const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
 
-        // Usamos um "batch": todas as aulas são gravadas juntas, de uma vez.
-        // Se algo der errado no meio do caminho, NADA é salvo (evita importação pela metade).
+        const sanitizeText = (txt, maxLen = 100) => {
+          if (typeof txt !== 'string') return '';
+          return txt.replace(/[<>]/g, '').trim().slice(0, maxLen);
+        };
+
         const batch = writeBatch(db);
         const classesRef = collection(db, 'users', user.uid, 'classes');
         let count = 0;
+        const newClassesList = [];
 
         for (const row of data) {
-          const startTime = row["Horário"];
-          if (!startTime) continue;
-          
-          const endTime = timeMap[startTime] || "18:00";
+          if (!row || typeof row !== 'object') continue;
+          const rawStartTime = typeof row["Horário"] === 'string' ? row["Horário"].trim() : '';
+          if (!rawStartTime) continue;
 
-          for (const dia of dias) {
+          // Valida formato de hora (ex: 13:00)
+          const startTime = timeRegex.test(rawStartTime) ? rawStartTime : '07:30';
+          const endTime = timeMap[startTime] || '18:00';
+
+          for (const dia of diasValidos) {
             const rawSubject = row[dia];
             const ignorar = ["Verificar PDF", "Extrair do PDF", "Livre", "-", "", null, undefined];
             
             if (rawSubject && typeof rawSubject === 'string' && !ignorar.includes(rawSubject.trim()) && !rawSubject.startsWith("Livre")) {
-              
               let subject = rawSubject;
               let teacher = "Não informado";
               
-              // Separa a matéria do professor usando a barra gerada pelo Python
               if (rawSubject.includes("|")) {
                 const parts = rawSubject.split("|");
-                subject = parts[0].trim();
-                teacher = parts[1].trim();
+                subject = parts[0];
+                teacher = parts[1] || "Não informado";
               }
 
-              const newDocRef = doc(classesRef);
-              batch.set(newDocRef, {
-                subject: subject,
-                teacher: teacher,
+              const safeSubject = sanitizeText(subject, 100);
+              const safeTeacher = sanitizeText(teacher, 100);
+
+              if (!safeSubject) continue;
+
+              const classData = {
+                subject: safeSubject,
+                teacher: safeTeacher,
                 dayOfWeek: dia,
                 startTime: startTime,
                 endTime: endTime,
                 color: "bg-blue-500"
-              });
+              };
+
+              const newDocRef = doc(classesRef);
+              batch.set(newDocRef, classData);
+              newClassesList.push({ id: newDocRef.id, ...classData });
               count++;
 
               // Limite de 500 operações por batch no Firestore
@@ -444,16 +515,19 @@ export default function StudyCompanionApp() {
         }
 
         if (count === 0) {
-          alert("Nenhuma aula válida encontrada nesse arquivo.");
+          showActionError('Nenhuma aula válida com horário e matéria foi encontrada no arquivo.');
           return;
         }
 
         await batch.commit();
-        alert(`🎉 ${count} aula(s) importada(s) com sucesso!`);
+
+        // Atualização otimista na tela
+        setClasses(prev => [...prev, ...newClassesList]);
+        showActionNotice(`🎉 ${count} aula(s) importada(s) com sucesso para o seu usuário!`);
         
       } catch (error) {
-        console.error("Erro ao importar", error);
-        alert("Erro ao ler o arquivo JSON. Tente gerar o arquivo novamente.");
+        console.error("Erro ao importar horários:", error.message || error);
+        showActionError('Não foi possível processar o arquivo JSON. Tente gerar novamente.');
       }
     };
     reader.readAsText(file);
@@ -526,13 +600,33 @@ export default function StudyCompanionApp() {
       <div className="flex justify-between items-center">
         <h2 className="text-2xl font-bold text-white">Horário de Aulas</h2>
         
-        <div className="flex space-x-2">
+        <div className="flex items-center space-x-2">
+          {classes.length > 0 && (
+            <button
+              onClick={() => setPendingDelete({ type: 'classes', id: 'ALL', label: 'todas as aulas do horário' })}
+              title="Excluir todas as aulas"
+              className="bg-red-500/10 hover:bg-red-600 text-red-400 hover:text-white p-2 rounded-xl flex items-center transition-colors text-sm font-semibold border border-red-500/30"
+            >
+              <Trash2 className="w-5 h-5 md:mr-1.5" />
+              <span className="hidden md:inline">Limpar Horário</span>
+            </button>
+          )}
+          <a
+            href="https://leitor-horarios-escola.streamlit.app/"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Abrir extrator de horários do PDF"
+            className="bg-slate-700 hover:bg-slate-600 text-slate-300 p-2 rounded-xl flex items-center transition-colors text-sm font-bold"
+          >
+            <FileText className="w-5 h-5 text-yellow-500 md:mr-1.5"/>
+            <span className="hidden md:inline">Ler PDF</span>
+          </a>
           <label className="bg-slate-700 hover:bg-slate-600 text-slate-300 p-2 rounded-xl flex items-center cursor-pointer transition-colors text-sm font-bold">
             <span className="hidden md:inline mr-2">Importar JSON</span>
             <FileText className="w-5 h-5"/>
             <input type="file" accept=".json" className="hidden" onChange={handleImportJSON} />
           </label>
-          <button onClick={() => { if(user) { setEditingClass(null); setIsSavingItem(false); setClassModalOpen(true); } else openSignIn(); }} className="bg-blue-600 hover:bg-blue-500 text-white p-2 rounded-xl flex items-center transition-colors">
+          <button onClick={() => { if(user) { setEditingClass(null); setClassModalOpen(true); } else openSignIn(); }} className="bg-blue-600 hover:bg-blue-500 text-white p-2 rounded-xl flex items-center transition-colors">
             <Plus className="w-5 h-5"/>
           </button>
         </div>
@@ -591,11 +685,21 @@ export default function StudyCompanionApp() {
         <h2 className="text-2xl font-bold text-white">Trabalhos</h2>
         <div className="flex items-center space-x-2">
           {tasks.length > 0 && (
-            <button onClick={exportTasksCSV} title="Exportar CSV" className="bg-slate-700 hover:bg-slate-600 text-slate-300 p-2 rounded-xl flex items-center transition-colors">
-              <Download className="w-5 h-5"/>
-            </button>
+            <>
+              <button
+                onClick={() => setPendingDelete({ type: 'tasks', id: 'ALL', label: 'todos os trabalhos' })}
+                title="Excluir todos os trabalhos"
+                className="bg-red-500/10 hover:bg-red-600 text-red-400 hover:text-white p-2 rounded-xl flex items-center transition-colors text-sm font-semibold border border-red-500/30"
+              >
+                <Trash2 className="w-5 h-5 md:mr-1.5" />
+                <span className="hidden md:inline">Limpar Tudo</span>
+              </button>
+              <button onClick={exportTasksCSV} title="Exportar CSV" className="bg-slate-700 hover:bg-slate-600 text-slate-300 p-2 rounded-xl flex items-center transition-colors">
+                <Download className="w-5 h-5"/>
+              </button>
+            </>
           )}
-          <button onClick={() => { if(user) { setEditingTask(null); setIsSavingItem(false); setTaskModalOpen(true); } else openSignIn(); }} className="bg-orange-600 hover:bg-orange-500 text-white p-2 rounded-xl flex items-center transition-colors">
+          <button onClick={() => { if(user) { setEditingTask(null); setTaskModalOpen(true); } else openSignIn(); }} className="bg-orange-600 hover:bg-orange-500 text-white p-2 rounded-xl flex items-center transition-colors">
             <Plus className="w-5 h-5"/>
           </button>
         </div>
@@ -633,7 +737,7 @@ export default function StudyCompanionApp() {
                 </div>
                 <div className="flex items-center space-x-2">
                   <span className={`px-3 py-1 rounded-full text-xs font-bold ${task.priority === 'alta' ? 'bg-red-500/20 text-red-400' : task.priority === 'média' ? 'bg-orange-500/20 text-orange-400' : 'bg-blue-500/20 text-blue-400'}`}>
-                    {task.priority.toUpperCase()}
+                    {(task.priority || 'baixa').toUpperCase()}
                   </span>
                   <button onClick={() => { setEditingTask(task); setIsSavingItem(false); setTaskModalOpen(true); }} className="text-slate-500 hover:text-yellow-400 transition-colors">
                     <Edit2 className="w-5 h-5"/>
@@ -693,11 +797,21 @@ export default function StudyCompanionApp() {
         <h2 className="text-2xl font-bold text-white">Provas</h2>
         <div className="flex items-center space-x-2">
           {exams.length > 0 && (
-            <button onClick={exportExamsCSV} title="Exportar CSV" className="bg-slate-700 hover:bg-slate-600 text-slate-300 p-2 rounded-xl flex items-center transition-colors">
-              <Download className="w-5 h-5"/>
-            </button>
+            <>
+              <button
+                onClick={() => setPendingDelete({ type: 'exams', id: 'ALL', label: 'todas as provas' })}
+                title="Excluir todas as provas"
+                className="bg-red-500/10 hover:bg-red-600 text-red-400 hover:text-white p-2 rounded-xl flex items-center transition-colors text-sm font-semibold border border-red-500/30"
+              >
+                <Trash2 className="w-5 h-5 md:mr-1.5" />
+                <span className="hidden md:inline">Limpar Tudo</span>
+              </button>
+              <button onClick={exportExamsCSV} title="Exportar CSV" className="bg-slate-700 hover:bg-slate-600 text-slate-300 p-2 rounded-xl flex items-center transition-colors">
+                <Download className="w-5 h-5"/>
+              </button>
+            </>
           )}
-          <button onClick={() => { if(user) { setEditingExam(null); setIsSavingItem(false); setExamModalOpen(true); } else openSignIn(); }} className="bg-purple-600 hover:bg-purple-500 text-white p-2 rounded-xl flex items-center transition-colors">
+          <button onClick={() => { if(user) { setEditingExam(null); setExamModalOpen(true); } else openSignIn(); }} className="bg-purple-600 hover:bg-purple-500 text-white p-2 rounded-xl flex items-center transition-colors">
             <Plus className="w-5 h-5"/>
           </button>
         </div>
@@ -876,11 +990,21 @@ export default function StudyCompanionApp() {
         <h2 className="text-2xl font-bold text-white">Notas</h2>
         <div className="flex items-center space-x-2">
           {grades.length > 0 && (
-            <button onClick={exportGradesCSV} title="Exportar CSV" className="bg-slate-700 hover:bg-slate-600 text-slate-300 p-2 rounded-xl flex items-center transition-colors">
-              <Download className="w-5 h-5"/>
-            </button>
+            <>
+              <button
+                onClick={() => setPendingDelete({ type: 'grades', id: 'ALL', label: 'todas as notas' })}
+                title="Excluir todas as notas"
+                className="bg-red-500/10 hover:bg-red-600 text-red-400 hover:text-white p-2 rounded-xl flex items-center transition-colors text-sm font-semibold border border-red-500/30"
+              >
+                <Trash2 className="w-5 h-5 md:mr-1.5" />
+                <span className="hidden md:inline">Limpar Tudo</span>
+              </button>
+              <button onClick={exportGradesCSV} title="Exportar CSV" className="bg-slate-700 hover:bg-slate-600 text-slate-300 p-2 rounded-xl flex items-center transition-colors">
+                <Download className="w-5 h-5"/>
+              </button>
+            </>
           )}
-          <button onClick={() => { if(user) { setEditingGrade(null); setIsSavingItem(false); setGradeModalOpen(true); } else openSignIn(); }} className="bg-emerald-600 hover:bg-emerald-500 text-white p-2 rounded-xl flex items-center transition-colors">
+          <button onClick={() => { if(user) { setEditingGrade(null); setGradeModalOpen(true); } else openSignIn(); }} className="bg-emerald-600 hover:bg-emerald-500 text-white p-2 rounded-xl flex items-center transition-colors">
             <Plus className="w-5 h-5"/>
           </button>
         </div>
@@ -1037,7 +1161,7 @@ export default function StudyCompanionApp() {
         <NavButton active={activeTab === 'focus'} onClick={() => setActiveTab('focus')} icon={<Timer className="w-6 h-6"/>} label="Foco" />
         
         <a 
-          href="https://app-organizacao-escolar.streamlit.app/" 
+          href="https://leitor-horarios-escola.streamlit.app/" 
           target="_blank" 
           rel="noopener noreferrer"
           className="flex flex-col items-center p-2 rounded-xl transition-all text-slate-400 hover:text-yellow-400 hover:bg-slate-700/50 flex-shrink-0"
@@ -1054,18 +1178,27 @@ export default function StudyCompanionApp() {
         </div>
       )}
 
+      {/* Toast de sucesso/informação */}
+      {actionNotice && (
+        <div className="fixed bottom-24 md:bottom-6 left-1/2 -translate-x-1/2 bg-emerald-600 text-white text-sm font-medium px-4 py-3 rounded-xl shadow-2xl z-[60] flex items-center">
+          <CheckCircle2 className="w-4 h-4 mr-2 flex-shrink-0" /> {actionNotice}
+        </div>
+      )}
+
       {/* Modal de confirmação de exclusão */}
       {pendingDelete && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
           <div className="bg-slate-800 rounded-3xl p-6 w-full max-w-sm border border-slate-700 shadow-2xl">
-            <h2 className="text-xl font-bold text-white mb-2">Excluir?</h2>
+            <h2 className="text-xl font-bold text-white mb-2">
+              {pendingDelete.id === 'ALL' ? 'Excluir tudo?' : 'Excluir?'}
+            </h2>
             <p className="text-slate-300 text-sm mb-6">Tem certeza que quer excluir {pendingDelete.label}? Essa ação não pode ser desfeita.</p>
             <div className="flex space-x-3">
               <button onClick={() => setPendingDelete(null)} className="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-bold rounded-xl p-3 transition-colors">
                 Cancelar
               </button>
               <button onClick={confirmDelete} className="flex-1 bg-red-600 hover:bg-red-500 text-white font-bold rounded-xl p-3 transition-colors">
-                Excluir
+                {pendingDelete.id === 'ALL' ? 'Excluir Tudo' : 'Excluir'}
               </button>
             </div>
           </div>
@@ -1080,19 +1213,31 @@ export default function StudyCompanionApp() {
           submitting={false}
           onSubmit={async (e) => {
             e.preventDefault();
-            const fd = new FormData(e.target);
+            const form = e.currentTarget || e.target;
+            const fd = new FormData(form);
             const data = {
-              subject: fd.get('subject'), teacher: fd.get('teacher'),
-              dayOfWeek: fd.get('dayOfWeek'), startTime: fd.get('startTime'), endTime: fd.get('endTime'), color: fd.get('color')
+              subject: String(fd.get('subject') || '').trim(),
+              teacher: String(fd.get('teacher') || '').trim(),
+              dayOfWeek: String(fd.get('dayOfWeek') || 'Segunda'),
+              startTime: String(fd.get('startTime') || ''),
+              endTime: String(fd.get('endTime') || ''),
+              color: String(fd.get('color') || 'bg-blue-500')
             };
             const currentId = editingClass?.id;
             setClassModalOpen(false);
             setEditingClass(null);
+
+            const targetUid = user?.uid || 'estudante-demo';
             try {
               if (currentId) {
-                await updateDoc(doc(db, 'users', user.uid, 'classes', currentId), data);
+                setClasses(prev => prev.map(c => c.id === currentId ? { ...c, ...data } : c));
+                await updateDoc(doc(db, 'users', targetUid, 'classes', currentId), data);
               } else {
-                await addDoc(collection(db, 'users', user.uid, 'classes'), data);
+                const docRef = await addDoc(collection(db, 'users', targetUid, 'classes'), data);
+                setClasses(prev => {
+                  if (prev.some(c => c.id === docRef.id)) return prev;
+                  return [...prev, { id: docRef.id, ...data }];
+                });
               }
             } catch (error) {
               console.error(error);
@@ -1102,14 +1247,14 @@ export default function StudyCompanionApp() {
         >
           <input name="subject" placeholder="Matéria (ex: Matemática)" defaultValue={editingClass?.subject} required maxLength={100} className="w-full bg-slate-700 text-white rounded-xl p-3 mb-3" />
           <input name="teacher" placeholder="Professor" defaultValue={editingClass?.teacher} maxLength={100} className="w-full bg-slate-700 text-white rounded-xl p-3 mb-3" />
-          <select name="dayOfWeek" defaultValue={editingClass?.dayOfWeek} className="w-full bg-slate-700 text-white rounded-xl p-3 mb-3">
+          <select name="dayOfWeek" defaultValue={editingClass?.dayOfWeek || 'Segunda'} className="w-full bg-slate-700 text-white rounded-xl p-3 mb-3">
             {DAYS_OF_WEEK.slice(1,6).map(d => <option key={d} value={d}>{d}</option>)}
           </select>
           <div className="flex space-x-3 mb-3">
-            <input name="startTime" type="time" defaultValue={editingClass?.startTime} required className="w-1/2 bg-slate-700 text-white rounded-xl p-3" />
-            <input name="endTime" type="time" defaultValue={editingClass?.endTime} required className="w-1/2 bg-slate-700 text-white rounded-xl p-3" />
+            <input name="startTime" type="time" defaultValue={editingClass?.startTime || '07:30'} required className="w-1/2 bg-slate-700 text-white rounded-xl p-3" />
+            <input name="endTime" type="time" defaultValue={editingClass?.endTime || '08:20'} required className="w-1/2 bg-slate-700 text-white rounded-xl p-3" />
           </div>
-          <select name="color" defaultValue={editingClass?.color} className="w-full bg-slate-700 text-white rounded-xl p-3 mb-4">
+          <select name="color" defaultValue={editingClass?.color || 'bg-blue-500'} className="w-full bg-slate-700 text-white rounded-xl p-3 mb-4">
             {COLORS.map(c => <option key={c.value} value={c.value}>{c.name}</option>)}
           </select>
         </GenericModal>
@@ -1123,9 +1268,10 @@ export default function StudyCompanionApp() {
           submitting={false}
           onSubmit={async (e) => {
             e.preventDefault();
-            const fd = new FormData(e.target);
-            const stepsStr = fd.get('steps');
-            const newStepTitles = stepsStr.split(',').map(s => s.trim()).filter(s => s);
+            const form = e.currentTarget || e.target;
+            const fd = new FormData(form);
+            const stepsStr = String(fd.get('steps') || '');
+            const newStepTitles = stepsStr ? stepsStr.split(',').map(s => s.trim()).filter(Boolean) : [];
             // Ao editar, mantém o "done" dos passos que já existiam com o mesmo título
             const previousSteps = editingTask?.steps || [];
             const steps = newStepTitles.map(title => {
@@ -1138,17 +1284,28 @@ export default function StudyCompanionApp() {
               : 'pendente';
 
             const data = {
-              title: fd.get('title'), subject: fd.get('subject'), dueDate: fd.get('dueDate'),
-              priority: fd.get('priority'), status, steps
+              title: String(fd.get('title') || '').trim(),
+              subject: String(fd.get('subject') || '').trim(),
+              dueDate: String(fd.get('dueDate') || '').trim(),
+              priority: String(fd.get('priority') || 'média').toLowerCase(),
+              status,
+              steps
             };
             const currentId = editingTask?.id;
             setTaskModalOpen(false);
             setEditingTask(null);
+
+            const targetUid = user?.uid || 'estudante-demo';
             try {
               if (currentId) {
-                await updateDoc(doc(db, 'users', user.uid, 'tasks', currentId), data);
+                setTasks(prev => prev.map(t => t.id === currentId ? { ...t, ...data } : t));
+                await updateDoc(doc(db, 'users', targetUid, 'tasks', currentId), data);
               } else {
-                await addDoc(collection(db, 'users', user.uid, 'tasks'), data);
+                const docRef = await addDoc(collection(db, 'users', targetUid, 'tasks'), data);
+                setTasks(prev => {
+                  if (prev.some(t => t.id === docRef.id)) return prev;
+                  return [...prev, { id: docRef.id, ...data }];
+                });
               }
             } catch (error) {
               console.error(error);
@@ -1160,7 +1317,7 @@ export default function StudyCompanionApp() {
           <input name="subject" placeholder="Matéria" defaultValue={editingTask?.subject} required maxLength={100} className="w-full bg-slate-700 text-white rounded-xl p-3 mb-3" />
           <div className="flex space-x-3 mb-3">
             <input name="dueDate" type="date" defaultValue={editingTask?.dueDate} required className="w-1/2 bg-slate-700 text-white rounded-xl p-3" />
-            <select name="priority" defaultValue={editingTask?.priority} className="w-1/2 bg-slate-700 text-white rounded-xl p-3">
+            <select name="priority" defaultValue={editingTask?.priority || 'média'} className="w-1/2 bg-slate-700 text-white rounded-xl p-3">
               <option value="baixa">Baixa Prioridade</option>
               <option value="média">Média Prioridade</option>
               <option value="alta">Alta Prioridade</option>
@@ -1178,24 +1335,37 @@ export default function StudyCompanionApp() {
           submitting={false}
           onSubmit={async (e) => {
             e.preventDefault();
-            const fd = new FormData(e.target);
-            const topicsStr = fd.get('topics');
-            const newTopicTitles = topicsStr.split(',').map(s => s.trim()).filter(s => s);
+            const form = e.currentTarget || e.target;
+            const fd = new FormData(form);
+            const topicsStr = String(fd.get('topics') || '');
+            const newTopicTitles = topicsStr ? topicsStr.split(',').map(s => s.trim()).filter(Boolean) : [];
             const previousTopics = editingExam?.topics || [];
             const topics = newTopicTitles.map(title => {
               const existing = previousTopics.find(t => t.title === title);
               return { title, done: existing ? existing.done : false };
             });
 
-            const data = { subject: fd.get('subject'), title: fd.get('title'), date: fd.get('date'), topics };
+            const data = {
+              subject: String(fd.get('subject') || '').trim(),
+              title: String(fd.get('title') || '').trim(),
+              date: String(fd.get('date') || '').trim(),
+              topics
+            };
             const currentId = editingExam?.id;
             setExamModalOpen(false);
             setEditingExam(null);
+
+            const targetUid = user?.uid || 'estudante-demo';
             try {
               if (currentId) {
-                await updateDoc(doc(db, 'users', user.uid, 'exams', currentId), data);
+                setExams(prev => prev.map(ex => ex.id === currentId ? { ...ex, ...data } : ex));
+                await updateDoc(doc(db, 'users', targetUid, 'exams', currentId), data);
               } else {
-                await addDoc(collection(db, 'users', user.uid, 'exams'), data);
+                const docRef = await addDoc(collection(db, 'users', targetUid, 'exams'), data);
+                setExams(prev => {
+                  if (prev.some(ex => ex.id === docRef.id)) return prev;
+                  return [...prev, { id: docRef.id, ...data }];
+                });
               }
             } catch (error) {
               console.error(error);
@@ -1218,26 +1388,34 @@ export default function StudyCompanionApp() {
           submitting={false}
           onSubmit={async (e) => {
             e.preventDefault();
-            const fd = new FormData(e.target);
+            const form = e.currentTarget || e.target;
+            const fd = new FormData(form);
             const gradeValue = Number(fd.get('value'));
             if (isNaN(gradeValue) || gradeValue < 0 || gradeValue > 10) {
               showActionError('Digite uma nota válida entre 0 e 10.');
               return;
             }
             const data = {
-              subject: fd.get('subject'),
-              title: fd.get('title'),
+              subject: String(fd.get('subject') || '').trim(),
+              title: String(fd.get('title') || '').trim(),
               value: gradeValue,
               weight: Number(fd.get('weight')) || 1,
             };
             const currentId = editingGrade?.id;
             setGradeModalOpen(false);
             setEditingGrade(null);
+
+            const targetUid = user?.uid || 'estudante-demo';
             try {
               if (currentId) {
-                await updateDoc(doc(db, 'users', user.uid, 'grades', currentId), data);
+                setGrades(prev => prev.map(g => g.id === currentId ? { ...g, ...data } : g));
+                await updateDoc(doc(db, 'users', targetUid, 'grades', currentId), data);
               } else {
-                await addDoc(collection(db, 'users', user.uid, 'grades'), data);
+                const docRef = await addDoc(collection(db, 'users', targetUid, 'grades'), data);
+                setGrades(prev => {
+                  if (prev.some(g => g.id === docRef.id)) return prev;
+                  return [...prev, { id: docRef.id, ...data }];
+                });
               }
             } catch (error) {
               console.error(error);
