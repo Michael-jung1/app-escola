@@ -527,7 +527,7 @@ export default function StudyCompanionApp() {
         
       } catch (error) {
         console.error("Erro ao importar horários:", error.message || error);
-        showActionError('Não foi possível processar o arquivo JSON. Tente gerar novamente.');
+        showActionError(`Não foi possível processar o arquivo JSON: ${error.message || 'erro desconhecido'}`);
       }
     };
     reader.readAsText(file);
@@ -611,16 +611,6 @@ export default function StudyCompanionApp() {
               <span className="hidden md:inline">Limpar Horário</span>
             </button>
           )}
-          <a
-            href="https://leitor-horarios-escola.streamlit.app/"
-            target="_blank"
-            rel="noopener noreferrer"
-            title="Abrir extrator de horários do PDF"
-            className="bg-slate-700 hover:bg-slate-600 text-slate-300 p-2 rounded-xl flex items-center transition-colors text-sm font-bold"
-          >
-            <FileText className="w-5 h-5 text-yellow-500 md:mr-1.5"/>
-            <span className="hidden md:inline">Ler PDF</span>
-          </a>
           <label className="bg-slate-700 hover:bg-slate-600 text-slate-300 p-2 rounded-xl flex items-center cursor-pointer transition-colors text-sm font-bold">
             <span className="hidden md:inline mr-2">Importar JSON</span>
             <FileText className="w-5 h-5"/>

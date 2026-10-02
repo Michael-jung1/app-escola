@@ -182,6 +182,7 @@ export function doc(firstArg, ...segments) {
   }
 
   // doc(collectionRef) sem segmentos: gera ID automático dentro da coleção.
+  // O userId vem do caminho da própria coleção, não do valor padrão.
   if (segments.length === 0 && firstArg && !firstArg._isLocal && firstArg.type === 'collection') {
     const parts = String(firstArg.path || '').split('/').filter(Boolean);
     if (parts[0] === 'users' && parts[1]) {
