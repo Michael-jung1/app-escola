@@ -23,6 +23,294 @@ const COLORS = [
   { name: 'Vermelho', value: 'bg-red-500' }
 ];
 
+function normalizeSubjectName(s) {
+  if (!s || typeof s !== 'string') return '';
+  return s
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+function getUniqueSubjects(classesList, initialSubject = '') {
+  if (!Array.isArray(classesList)) return [];
+  const map = new Map();
+
+  for (const c of classesList) {
+    if (!c || !c.subject) continue;
+    const raw = String(c.subject).trim();
+    if (!raw) continue;
+    const norm = normalizeSubjectName(raw);
+    if (!norm || norm === 'livre') continue;
+
+    if (!map.has(norm)) {
+      map.set(norm, raw);
+    }
+  }
+
+  // Se o item em edição tiver uma matéria que não está nas aulas, adiciona para manter selecionável
+  if (initialSubject && typeof initialSubject === 'string') {
+    const trimmedInit = initialSubject.trim();
+    const normInit = normalizeSubjectName(trimmedInit);
+    if (normInit && normInit !== 'livre' && !map.has(normInit)) {
+      map.set(normInit, trimmedInit);
+    }
+  }
+
+  const subjects = Array.from(map.values());
+  subjects.sort((a, b) => a.localeCompare(b, 'pt-BR', { sensitivity: 'base' }));
+  return subjects;
+}
+
+function getNextClassDate(subject, classesList, now = new Date()) {
+  const normSubject = normalizeSubjectName(subject);
+  if (!normSubject || !Array.isArray(classesList) || classesList.length === 0) {
+    return null;
+  }
+
+  const matching = classesList.filter(c => {
+    if (!c || !c.subject) return false;
+    const sub = normalizeSubjectName(c.subject);
+    return sub === normSubject && sub !== 'livre';
+  });
+
+  if (matching.length === 0) return null;
+
+  let earliest = null;
+
+  for (const c of matching) {
+    const dayIndex = DAYS_OF_WEEK.indexOf(c.dayOfWeek);
+    if (dayIndex === -1) continue;
+
+    const timeStr = String(c.startTime || '').trim();
+    const timeParts = timeStr.split(':');
+    if (timeParts.length < 2) continue;
+
+    const hours = parseInt(timeParts[0], 10);
+    const minutes = parseInt(timeParts[1], 10);
+    if (isNaN(hours) || isNaN(minutes) || hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+      continue;
+    }
+
+    const currentDay = now.getDay();
+    const daysUntil = (dayIndex - currentDay + 7) % 7;
+
+    const occurrence = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate() + daysUntil,
+      hours,
+      minutes,
+      0,
+      0
+    );
+
+    // Se hoje é o dia da aula, mas o horário de início já passou, avança 7 dias (próxima semana)
+    if (occurrence <= now) {
+      occurrence.setDate(occurrence.getDate() + 7);
+    }
+
+    if (!earliest || occurrence < earliest.dateObj) {
+      earliest = {
+        dateObj: occurrence,
+        subjectName: c.subject,
+        dayOfWeek: c.dayOfWeek,
+        startTime: timeStr,
+        hours,
+        minutes
+      };
+    }
+  }
+
+  if (!earliest) return null;
+
+  const target = earliest.dateObj;
+  const year = target.getFullYear();
+  const month = String(target.getMonth() + 1).padStart(2, '0');
+  const day = String(target.getDate()).padStart(2, '0');
+  const dateStr = `${year}-${month}-${day}`;
+
+  const dayOfWeekName = DAYS_OF_WEEK[target.getDay()];
+  const formattedDayMonth = `${day}/${month}`;
+  const formattedTime = earliest.startTime;
+
+  return {
+    date: dateStr,
+    dayOfWeek: dayOfWeekName,
+    formattedDate: formattedDayMonth,
+    startTime: formattedTime,
+    subjectName: earliest.subjectName,
+    label: `${dayOfWeekName}, ${formattedDayMonth} às ${formattedTime}`
+  };
+}
+
+function SubjectDateFields({
+  classes,
+  dateFieldName,
+  initialSubject = '',
+  initialDate = '',
+  extraDateElement = null
+}) {
+  const uniqueSubjects = useMemo(() => getUniqueSubjects(classes, initialSubject), [classes, initialSubject]);
+  const hasClasses = Array.isArray(classes) && classes.length > 0;
+
+  const matchedInitial = useMemo(() => {
+    if (!initialSubject) return '';
+    const norm = normalizeSubjectName(initialSubject);
+    return uniqueSubjects.find(s => normalizeSubjectName(s) === norm) || '';
+  }, [initialSubject, uniqueSubjects]);
+
+  const [selectedOption, setSelectedOption] = useState(() => {
+    if (!hasClasses) return '';
+    if (initialSubject) {
+      return matchedInitial || '__OTHER__';
+    }
+    return '';
+  });
+
+  const [customSubject, setCustomSubject] = useState(() => {
+    if (!hasClasses) return initialSubject || '';
+    if (initialSubject && !matchedInitial) return initialSubject;
+    return '';
+  });
+
+  const [isNextClass, setIsNextClass] = useState(false);
+  const [dateValue, setDateValue] = useState(initialDate || '');
+
+  const effectiveSubject = selectedOption === '__OTHER__' ? customSubject.trim() : (hasClasses ? selectedOption : customSubject.trim());
+
+  const nextClassInfo = useMemo(() => {
+    if (!effectiveSubject) return null;
+    return getNextClassDate(effectiveSubject, classes);
+  }, [effectiveSubject, classes]);
+
+  useEffect(() => {
+    if (isNextClass && nextClassInfo) {
+      setDateValue(nextClassInfo.date);
+    }
+  }, [isNextClass, nextClassInfo]);
+
+  return (
+    <>
+      {/* Campo de Matéria */}
+      {!hasClasses ? (
+        <div className="mb-3">
+          <input
+            name="subject"
+            placeholder="Matéria"
+            defaultValue={initialSubject}
+            required
+            maxLength={100}
+            className="w-full bg-slate-700 text-white rounded-xl p-3"
+            onChange={(e) => setCustomSubject(e.target.value)}
+          />
+          <p className="text-xs text-slate-400 mt-1">Cadastre seu horário para escolher as matérias numa lista.</p>
+        </div>
+      ) : (
+        <div className="mb-3">
+          <select
+            name={selectedOption === '__OTHER__' ? undefined : 'subject'}
+            value={selectedOption}
+            onChange={(e) => {
+              const val = e.target.value;
+              setSelectedOption(val);
+              if (val !== '__OTHER__') {
+                const info = getNextClassDate(val, classes);
+                if (isNextClass && info) {
+                  setDateValue(info.date);
+                }
+              }
+            }}
+            required
+            className="w-full bg-slate-700 text-white rounded-xl p-3"
+          >
+            <option value="" disabled>Selecione a matéria</option>
+            {uniqueSubjects.map(subj => (
+              <option key={subj} value={subj}>{subj}</option>
+            ))}
+            <option value="__OTHER__">Outra matéria…</option>
+          </select>
+
+          {selectedOption === '__OTHER__' && (
+            <input
+              name="subject"
+              placeholder="Nome da matéria"
+              value={customSubject}
+              onChange={(e) => {
+                const val = e.target.value;
+                setCustomSubject(val);
+                const info = getNextClassDate(val, classes);
+                if (isNextClass && info) {
+                  setDateValue(info.date);
+                }
+              }}
+              required
+              maxLength={100}
+              className="w-full bg-slate-700 text-white rounded-xl p-3 mt-2"
+            />
+          )}
+        </div>
+      )}
+
+      {/* Opção Para a próxima aula desta matéria */}
+      <div className="mb-3 bg-slate-700/30 p-2.5 rounded-xl border border-slate-700/60">
+        <label className={`flex items-center text-sm select-none ${!nextClassInfo ? 'text-slate-500 cursor-not-allowed' : 'text-slate-300 cursor-pointer'}`}>
+          <input
+            type="checkbox"
+            checked={isNextClass && Boolean(nextClassInfo)}
+            disabled={!nextClassInfo}
+            onChange={(e) => {
+              const checked = e.target.checked;
+              setIsNextClass(checked);
+              if (checked && nextClassInfo) {
+                setDateValue(nextClassInfo.date);
+              }
+            }}
+            className="w-4 h-4 rounded border-slate-600 bg-slate-700 text-blue-600 focus:ring-blue-500 mr-2 accent-blue-500"
+          />
+          Para a próxima aula desta matéria
+        </label>
+        {isNextClass && nextClassInfo ? (
+          <p className="text-xs text-emerald-400 mt-1 flex items-center font-medium">
+            <Clock className="w-3.5 h-3.5 mr-1 flex-shrink-0" />
+            Próxima aula de {nextClassInfo.subjectName}: {nextClassInfo.label}
+          </p>
+        ) : !nextClassInfo && effectiveSubject ? (
+          <p className="text-xs text-slate-400 mt-1">
+            Esta matéria não está no seu horário.
+          </p>
+        ) : null}
+      </div>
+
+      {/* Campo de Data */}
+      {extraDateElement ? (
+        <div className="flex space-x-3 mb-3">
+          <input
+            name={dateFieldName}
+            type="date"
+            value={dateValue}
+            onChange={(e) => setDateValue(e.target.value)}
+            readOnly={isNextClass && Boolean(nextClassInfo)}
+            required
+            className={`w-1/2 bg-slate-700 text-white rounded-xl p-3 transition-opacity ${isNextClass && nextClassInfo ? 'opacity-70 cursor-not-allowed bg-slate-700/70' : ''}`}
+          />
+          {extraDateElement}
+        </div>
+      ) : (
+        <input
+          name={dateFieldName}
+          type="date"
+          value={dateValue}
+          onChange={(e) => setDateValue(e.target.value)}
+          readOnly={isNextClass && Boolean(nextClassInfo)}
+          required
+          className={`w-full bg-slate-700 text-white rounded-xl p-3 mb-3 transition-opacity ${isNextClass && nextClassInfo ? 'opacity-70 cursor-not-allowed bg-slate-700/70' : ''}`}
+        />
+      )}
+    </>
+  );
+}
+
 export default function StudyCompanionApp() {
   const [activeTab, setActiveTab] = useState('home');
 
@@ -1304,15 +1592,19 @@ export default function StudyCompanionApp() {
           }}
         >
           <input name="title" placeholder="Título (ex: Maquete Célula)" defaultValue={editingTask?.title} required maxLength={150} className="w-full bg-slate-700 text-white rounded-xl p-3 mb-3" />
-          <input name="subject" placeholder="Matéria" defaultValue={editingTask?.subject} required maxLength={100} className="w-full bg-slate-700 text-white rounded-xl p-3 mb-3" />
-          <div className="flex space-x-3 mb-3">
-            <input name="dueDate" type="date" defaultValue={editingTask?.dueDate} required className="w-1/2 bg-slate-700 text-white rounded-xl p-3" />
-            <select name="priority" defaultValue={editingTask?.priority || 'média'} className="w-1/2 bg-slate-700 text-white rounded-xl p-3">
-              <option value="baixa">Baixa Prioridade</option>
-              <option value="média">Média Prioridade</option>
-              <option value="alta">Alta Prioridade</option>
-            </select>
-          </div>
+          <SubjectDateFields
+            classes={classes}
+            dateFieldName="dueDate"
+            initialSubject={editingTask?.subject}
+            initialDate={editingTask?.dueDate}
+            extraDateElement={
+              <select name="priority" defaultValue={editingTask?.priority || 'média'} className="w-1/2 bg-slate-700 text-white rounded-xl p-3">
+                <option value="baixa">Baixa Prioridade</option>
+                <option value="média">Média Prioridade</option>
+                <option value="alta">Alta Prioridade</option>
+              </select>
+            }
+          />
           <textarea name="steps" placeholder="Passos (separados por vírgula)" defaultValue={editingTask?.steps?.map(s => s.title).join(', ')} className="w-full bg-slate-700 text-white rounded-xl p-3 mb-4 h-24" />
         </GenericModal>
       )}
@@ -1363,9 +1655,13 @@ export default function StudyCompanionApp() {
             }
           }}
         >
-          <input name="subject" placeholder="Matéria (ex: Química)" defaultValue={editingExam?.subject} required maxLength={100} className="w-full bg-slate-700 text-white rounded-xl p-3 mb-3" />
           <input name="title" placeholder="Assunto (ex: Prova Bimestral)" defaultValue={editingExam?.title} required maxLength={150} className="w-full bg-slate-700 text-white rounded-xl p-3 mb-3" />
-          <input name="date" type="date" defaultValue={editingExam?.date} required className="w-full bg-slate-700 text-white rounded-xl p-3 mb-3" />
+          <SubjectDateFields
+            classes={classes}
+            dateFieldName="date"
+            initialSubject={editingExam?.subject}
+            initialDate={editingExam?.date}
+          />
           <textarea name="topics" placeholder="Tópicos (separados por vírgula)" defaultValue={editingExam?.topics?.map(t => t.title).join(', ')} className="w-full bg-slate-700 text-white rounded-xl p-3 mb-4 h-24" />
         </GenericModal>
       )}
