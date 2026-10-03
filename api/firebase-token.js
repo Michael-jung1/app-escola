@@ -2,17 +2,20 @@ import { verifyToken } from '@clerk/backend';
 import admin from 'firebase-admin';
 import { Redis } from '@upstash/redis';
 
-// Inicializa o Firebase Admin apenas uma vez (evita erro de "app already exists"
-// em ambiente serverless, onde a função pode ser reaproveitada entre chamadas).
-if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      // A chave privada vem com \n escapados na variável de ambiente — precisa reverter.
-      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
-    }),
-  });
+// Inicializa o Firebase Admin com tratamento de erro
+try {
+  if (!admin.apps.length && process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId: process.env.FIREBASE_PROJECT_ID,
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        // A chave privada vem com \n escapados na variável de ambiente — precisa reverter.
+        privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+      }),
+    });
+  }
+} catch (err) {
+  console.error('Erro ao inicializar Firebase Admin:', err.message || err);
 }
 
 // Configuração do Upstash Redis para Rate Limiter Distribuído (Serverless multi-instância)
@@ -33,9 +36,9 @@ const rateLimitMap = new Map();
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const MAX_REQUESTS_PER_WINDOW = 15;
 
-function isMemoryRateLimited(clientIp) {
+function isMemoryRateLimited(key, max = MAX_REQUESTS_PER_WINDOW) {
   const now = Date.now();
-  const record = rateLimitMap.get(clientIp) || { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
+  const record = rateLimitMap.get(key) || { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
   
   if (now > record.resetAt) {
     record.count = 0;
@@ -43,27 +46,27 @@ function isMemoryRateLimited(clientIp) {
   }
   
   record.count++;
-  rateLimitMap.set(clientIp, record);
-  return record.count > MAX_REQUESTS_PER_WINDOW;
+  rateLimitMap.set(key, record);
+  return record.count > max;
 }
 
-export async function checkRateLimit(clientIp) {
+export async function checkRateLimit(key, max = MAX_REQUESTS_PER_WINDOW) {
   // Se Upstash Redis estiver configurado, usa contador atômico compartilhado entre instâncias
   if (redis) {
     try {
-      const key = `ratelimit:firebase_token:${clientIp}`;
-      const count = await redis.incr(key);
+      const redisKey = `ratelimit:firebase_token:${key}`;
+      const count = await redis.incr(redisKey);
       if (count === 1) {
-        await redis.expire(key, 60);
+        await redis.expire(redisKey, 60);
       }
-      return count > MAX_REQUESTS_PER_WINDOW;
+      return count > max;
     } catch (err) {
       console.warn('Erro ao consultar Upstash Redis, utilizando fallback em memória:', err.message);
     }
   }
 
   // Fallback seguro em memória
-  return isMemoryRateLimited(clientIp);
+  return isMemoryRateLimited(key, max);
 }
 
 /**
@@ -79,9 +82,20 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  const missingVars = [];
+  if (!process.env.FIREBASE_PROJECT_ID) missingVars.push('FIREBASE_PROJECT_ID');
+  if (!process.env.FIREBASE_CLIENT_EMAIL) missingVars.push('FIREBASE_CLIENT_EMAIL');
+  if (!process.env.FIREBASE_PRIVATE_KEY) missingVars.push('FIREBASE_PRIVATE_KEY');
+  if (!process.env.CLERK_SECRET_KEY) missingVars.push('CLERK_SECRET_KEY');
+
+  if (!admin.apps.length || missingVars.length > 0) {
+    console.error('Configuração do servidor incompleta. Variáveis ausentes:', missingVars.join(', '));
+    return res.status(500).json({ error: 'Configuração do servidor incompleta.' });
+  }
+
   const clientIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || 'unknown';
-  const blocked = await checkRateLimit(clientIp);
-  if (blocked) {
+  const ipBlocked = await checkRateLimit('ip:' + clientIp, 120);
+  if (ipBlocked) {
     return res.status(429).json({ error: 'Muitas requisições. Aguarde um momento antes de tentar novamente.' });
   }
 
@@ -103,6 +117,11 @@ export default async function handler(req, res) {
     const clerkUserId = claims?.sub;
     if (!clerkUserId || typeof clerkUserId !== 'string') {
       return res.status(401).json({ error: 'Sessão inválida ou expirada.' });
+    }
+
+    const userBlocked = await checkRateLimit('user:' + clerkUserId, 15);
+    if (userBlocked) {
+      return res.status(429).json({ error: 'Muitas requisições. Aguarde um momento antes de tentar novamente.' });
     }
 
     const firebaseToken = await admin.auth().createCustomToken(clerkUserId);

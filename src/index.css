@@ -44,4 +44,8 @@
 .theme-light .hover\:bg-slate-600:hover { background-color: #e2e8f0 !important; }
 .theme-light .hover\:bg-slate-700\/50:hover { background-color: rgba(226, 232, 240, 0.6) !important; }
 
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
 /* Modais e overlays: o fundo preto semitransparente continua igual nos dois temas */

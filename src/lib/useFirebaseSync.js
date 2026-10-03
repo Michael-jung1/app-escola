@@ -16,6 +16,7 @@ export function useFirebaseSync() {
   const { isLoaded, isSignedIn, getToken, userId } = useAuth();
   const [firebaseReady, setFirebaseReady] = useState(false);
   const [syncError, setSyncError] = useState(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!isLoaded) return;
@@ -36,32 +37,54 @@ export function useFirebaseSync() {
     let cancelled = false;
 
     async function syncFirebase() {
-      try {
-        const clerkToken = await getToken();
+      const delays = [3000, 6000];
+      const maxAttempts = 3;
 
-        const res = await fetch('/api/firebase-token', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${clerkToken}` },
-        });
+      for (let i = 0; i < maxAttempts; i++) {
+        if (cancelled) return;
 
-        if (!res.ok) {
-          throw new Error('Falha ao obter token do Firebase');
+        try {
+          const clerkToken = await getToken();
+          if (!clerkToken) {
+            throw new Error('Token do Clerk indisponível');
+          }
+
+          const res = await fetch('/api/firebase-token', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${clerkToken}` },
+          });
+
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.error || `HTTP ${res.status}`);
+          }
+
+          const { firebaseToken } = await res.json();
+          if (!firebaseToken) {
+            throw new Error('Token do Firebase não retornado');
+          }
+
+          await signInWithCustomToken(auth, firebaseToken);
+
+          if (!cancelled) {
+            setFirebaseReady(true);
+            setSyncError(null);
+          }
+          return;
+        } catch (error) {
+          console.warn(`Tentativa ${i + 1}/${maxAttempts} de sincronização falhou:`, error.message || error);
+          if (cancelled) return;
+
+          if (i < maxAttempts - 1) {
+            const waitMs = delays[i] || 3000;
+            await new Promise(resolve => setTimeout(resolve, waitMs));
+          }
         }
+      }
 
-        const { firebaseToken } = await res.json();
-        await signInWithCustomToken(auth, firebaseToken);
-
-        if (!cancelled) {
-          setFirebaseReady(true);
-          setSyncError(null);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          console.warn('Firebase sync offline or unconfigured, running in local mode:', error);
-          // Permite que o app continue funcionando no modo local
-          setFirebaseReady(true);
-          setSyncError(null);
-        }
+      if (!cancelled) {
+        setFirebaseReady(false);
+        setSyncError('Não foi possível conectar à sua conta. Verifique a internet e tente novamente.');
       }
     }
 
@@ -70,7 +93,16 @@ export function useFirebaseSync() {
     return () => {
       cancelled = true;
     };
-  }, [isLoaded, isSignedIn, getToken, userId]);
+  }, [isLoaded, isSignedIn, getToken, userId, attempt]);
 
-  return { firebaseReady, syncError, userId };
+  return {
+    firebaseReady,
+    syncError,
+    userId,
+    retry: () => {
+      setSyncError(null);
+      setFirebaseReady(false);
+      setAttempt(a => a + 1);
+    }
+  };
 }

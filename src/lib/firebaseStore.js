@@ -355,13 +355,14 @@ export async function clearCollection(userId, collectionName) {
   assertUserAuthorization(userId);
   const normUser = normalizeUser(userId);
   if (auth.currentUser) {
-    try {
-      const snap = await realGetDocs(realCollection(db, 'users', normUser, collectionName));
+    const snap = await realGetDocs(realCollection(db, 'users', normUser, collectionName));
+    const docs = snap.docs;
+    const BATCH_SIZE = 450;
+    for (let i = 0; i < docs.length; i += BATCH_SIZE) {
       const batch = realWriteBatch(db);
-      snap.forEach(d => batch.delete(d.ref));
+      const chunk = docs.slice(i, i + BATCH_SIZE);
+      chunk.forEach(d => batch.delete(d.ref));
       await batch.commit();
-    } catch (e) {
-      console.warn('Error clearing Firestore collection:', e);
     }
   }
 

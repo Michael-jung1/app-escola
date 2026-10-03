@@ -20,6 +20,19 @@ export function ClerkProvider({ children, publishableKey, ...props }) {
     );
   }
 
+  if (!isClerkConfigured && import.meta.env.PROD) {
+    return (
+      <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col items-center justify-center p-6 text-center font-sans">
+        <div className="bg-slate-800 border border-slate-700 rounded-3xl p-8 max-w-md shadow-2xl">
+          <h2 className="text-xl font-bold text-red-400 mb-3">Configuração de login ausente</h2>
+          <p className="text-slate-300 text-sm">
+            Configuração de login ausente (VITE_CLERK_PUBLISHABLE_KEY). Avise o administrador do app.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return <MockClerkProvider>{children}</MockClerkProvider>;
 }
 

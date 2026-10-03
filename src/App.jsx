@@ -144,12 +144,13 @@ function getNextClassDate(subject, classesList, now = new Date()) {
   };
 }
 
-function SubjectDateFields({
+function SubjectSelect({
   classes,
-  dateFieldName,
   initialSubject = '',
-  initialDate = '',
-  extraDateElement = null
+  name = 'subject',
+  placeholder = 'Matéria',
+  required = true,
+  onChange = null,
 }) {
   const uniqueSubjects = useMemo(() => getUniqueSubjects(classes, initialSubject), [classes, initialSubject]);
   const hasClasses = Array.isArray(classes) && classes.length > 0;
@@ -174,10 +175,80 @@ function SubjectDateFields({
     return '';
   });
 
+  const handleSelectChange = (e) => {
+    const val = e.target.value;
+    setSelectedOption(val);
+    if (onChange) {
+      onChange(val === '__OTHER__' ? customSubject.trim() : val);
+    }
+  };
+
+  const handleCustomChange = (e) => {
+    const val = e.target.value;
+    setCustomSubject(val);
+    if (onChange) {
+      onChange(val.trim());
+    }
+  };
+
+  if (!hasClasses) {
+    return (
+      <div className="mb-3">
+        <input
+          name={name}
+          placeholder={placeholder}
+          defaultValue={initialSubject}
+          required={required}
+          maxLength={100}
+          className="w-full bg-slate-700 text-white rounded-xl p-3"
+          onChange={handleCustomChange}
+        />
+        <p className="text-xs text-slate-400 mt-1">Cadastre seu horário para escolher as matérias numa lista.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-3">
+      <select
+        name={selectedOption === '__OTHER__' ? undefined : name}
+        value={selectedOption}
+        onChange={handleSelectChange}
+        required={required}
+        className="w-full bg-slate-700 text-white rounded-xl p-3"
+      >
+        <option value="" disabled>Selecione a matéria</option>
+        {uniqueSubjects.map(subj => (
+          <option key={subj} value={subj}>{subj}</option>
+        ))}
+        <option value="__OTHER__">Outra matéria…</option>
+      </select>
+
+      {selectedOption === '__OTHER__' && (
+        <input
+          name={name}
+          placeholder="Nome da matéria"
+          value={customSubject}
+          onChange={handleCustomChange}
+          required={required}
+          maxLength={100}
+          className="w-full bg-slate-700 text-white rounded-xl p-3 mt-2"
+        />
+      )}
+    </div>
+  );
+}
+
+function SubjectDateFields({
+  classes,
+  dateFieldName,
+  initialSubject = '',
+  initialDate = '',
+  extraDateElement = null
+}) {
+  const [effectiveSubject, setEffectiveSubject] = useState(initialSubject || '');
   const [isNextClass, setIsNextClass] = useState(false);
   const [dateValue, setDateValue] = useState(initialDate || '');
-
-  const effectiveSubject = selectedOption === '__OTHER__' ? customSubject.trim() : (hasClasses ? selectedOption : customSubject.trim());
 
   const nextClassInfo = useMemo(() => {
     if (!effectiveSubject) return null;
@@ -190,74 +261,34 @@ function SubjectDateFields({
     }
   }, [isNextClass, nextClassInfo]);
 
+  useEffect(() => {
+    if (!nextClassInfo && isNextClass) {
+      setIsNextClass(false);
+    }
+  }, [nextClassInfo, isNextClass]);
+
+  const isLocked = isNextClass && Boolean(nextClassInfo);
+
   return (
     <>
-      {/* Campo de Matéria */}
-      {!hasClasses ? (
-        <div className="mb-3">
-          <input
-            name="subject"
-            placeholder="Matéria"
-            defaultValue={initialSubject}
-            required
-            maxLength={100}
-            className="w-full bg-slate-700 text-white rounded-xl p-3"
-            onChange={(e) => setCustomSubject(e.target.value)}
-          />
-          <p className="text-xs text-slate-400 mt-1">Cadastre seu horário para escolher as matérias numa lista.</p>
-        </div>
-      ) : (
-        <div className="mb-3">
-          <select
-            name={selectedOption === '__OTHER__' ? undefined : 'subject'}
-            value={selectedOption}
-            onChange={(e) => {
-              const val = e.target.value;
-              setSelectedOption(val);
-              if (val !== '__OTHER__') {
-                const info = getNextClassDate(val, classes);
-                if (isNextClass && info) {
-                  setDateValue(info.date);
-                }
-              }
-            }}
-            required
-            className="w-full bg-slate-700 text-white rounded-xl p-3"
-          >
-            <option value="" disabled>Selecione a matéria</option>
-            {uniqueSubjects.map(subj => (
-              <option key={subj} value={subj}>{subj}</option>
-            ))}
-            <option value="__OTHER__">Outra matéria…</option>
-          </select>
-
-          {selectedOption === '__OTHER__' && (
-            <input
-              name="subject"
-              placeholder="Nome da matéria"
-              value={customSubject}
-              onChange={(e) => {
-                const val = e.target.value;
-                setCustomSubject(val);
-                const info = getNextClassDate(val, classes);
-                if (isNextClass && info) {
-                  setDateValue(info.date);
-                }
-              }}
-              required
-              maxLength={100}
-              className="w-full bg-slate-700 text-white rounded-xl p-3 mt-2"
-            />
-          )}
-        </div>
-      )}
+      <SubjectSelect
+        classes={classes}
+        initialSubject={initialSubject}
+        onChange={(sub) => {
+          setEffectiveSubject(sub);
+          const info = getNextClassDate(sub, classes);
+          if (isNextClass && info) {
+            setDateValue(info.date);
+          }
+        }}
+      />
 
       {/* Opção Para a próxima aula desta matéria */}
       <div className="mb-3 bg-slate-700/30 p-2.5 rounded-xl border border-slate-700/60">
         <label className={`flex items-center text-sm select-none ${!nextClassInfo ? 'text-slate-500 cursor-not-allowed' : 'text-slate-300 cursor-pointer'}`}>
           <input
             type="checkbox"
-            checked={isNextClass && Boolean(nextClassInfo)}
+            checked={isLocked}
             disabled={!nextClassInfo}
             onChange={(e) => {
               const checked = e.target.checked;
@@ -290,9 +321,11 @@ function SubjectDateFields({
             type="date"
             value={dateValue}
             onChange={(e) => setDateValue(e.target.value)}
-            readOnly={isNextClass && Boolean(nextClassInfo)}
+            readOnly={isLocked}
+            tabIndex={isLocked ? -1 : undefined}
+            aria-readonly={isLocked ? "true" : undefined}
             required
-            className={`w-1/2 bg-slate-700 text-white rounded-xl p-3 transition-opacity ${isNextClass && nextClassInfo ? 'opacity-70 cursor-not-allowed bg-slate-700/70' : ''}`}
+            className={`w-1/2 bg-slate-700 text-white rounded-xl p-3 transition-opacity ${isLocked ? 'opacity-70 cursor-not-allowed bg-slate-700/70 pointer-events-none' : ''}`}
           />
           {extraDateElement}
         </div>
@@ -302,9 +335,11 @@ function SubjectDateFields({
           type="date"
           value={dateValue}
           onChange={(e) => setDateValue(e.target.value)}
-          readOnly={isNextClass && Boolean(nextClassInfo)}
+          readOnly={isLocked}
+          tabIndex={isLocked ? -1 : undefined}
+          aria-readonly={isLocked ? "true" : undefined}
           required
-          className={`w-full bg-slate-700 text-white rounded-xl p-3 mb-3 transition-opacity ${isNextClass && nextClassInfo ? 'opacity-70 cursor-not-allowed bg-slate-700/70' : ''}`}
+          className={`w-full bg-slate-700 text-white rounded-xl p-3 mb-3 transition-opacity ${isLocked ? 'opacity-70 cursor-not-allowed bg-slate-700/70 pointer-events-none' : ''}`}
         />
       )}
     </>
@@ -322,6 +357,22 @@ export default function StudyCompanionApp() {
   const [isTaskModalOpen, setTaskModalOpen] = useState(false);
   const [isExamModalOpen, setExamModalOpen] = useState(false);
   const [isNotificationsOpen, setNotificationsOpen] = useState(false);
+  const notificationsContainerRef = useRef(null);
+
+  useEffect(() => {
+    if (!isNotificationsOpen) return;
+
+    const handleClickOutside = (e) => {
+      if (notificationsContainerRef.current && !notificationsContainerRef.current.contains(e.target)) {
+        setNotificationsOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isNotificationsOpen]);
 
   // Guarda o item sendo editado (null = criando um novo)
   const [editingClass, setEditingClass] = useState(null);
@@ -378,6 +429,7 @@ export default function StudyCompanionApp() {
   const [pomodoroMode, setPomodoroMode] = useState('work');
   const [timeLeft, setTimeLeft] = useState(25 * 60);
   const [isTimerRunning, setIsTimerRunning] = useState(false);
+  const endAtRef = useRef(null);
 
   const playBeep = () => {
     try {
@@ -395,30 +447,57 @@ export default function StudyCompanionApp() {
   };
 
   useEffect(() => {
-    let interval = null;
-    if (isTimerRunning && timeLeft > 0) {
-      interval = setInterval(() => {
-        setTimeLeft(prev => prev - 1);
-      }, 1000);
-    } else if (isTimerRunning && timeLeft === 0) {
-      playBeep();
-      if (pomodoroMode === 'work') {
-        setPomodoroMode('break');
-        setTimeLeft(5 * 60);
-      } else {
-        setPomodoroMode('work');
-        setTimeLeft(25 * 60);
-        setIsTimerRunning(false);
-      }
+    if (!isTimerRunning) {
+      endAtRef.current = null;
+      return;
     }
-    return () => clearInterval(interval);
-  }, [isTimerRunning, timeLeft, pomodoroMode]);
+
+    if (!endAtRef.current) {
+      endAtRef.current = Date.now() + timeLeft * 1000;
+    }
+
+    const updateTimer = () => {
+      if (!endAtRef.current) return;
+      const remaining = Math.max(0, Math.ceil((endAtRef.current - Date.now()) / 1000));
+      setTimeLeft(remaining);
+
+      if (remaining === 0) {
+        playBeep();
+        if (pomodoroMode === 'work') {
+          setPomodoroMode('break');
+          const nextDuration = 5 * 60;
+          setTimeLeft(nextDuration);
+          endAtRef.current = Date.now() + nextDuration * 1000;
+        } else {
+          setPomodoroMode('work');
+          setTimeLeft(25 * 60);
+          setIsTimerRunning(false);
+          endAtRef.current = null;
+        }
+      }
+    };
+
+    const interval = setInterval(updateTimer, 250);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        updateTimer();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [isTimerRunning, pomodoroMode]);
 
   // Ponte Clerk -> Firebase: garante que o Firestore só é usado depois que
   // o usuário também estiver autenticado no Firebase Auth (com o mesmo ID do Clerk).
   const { isLoaded: clerkLoaded, isSignedIn, user: clerkUser } = useUser();
   const { signOut: clerkSignOut, openSignIn } = useClerk();
-  const { firebaseReady, syncError } = useFirebaseSync();
+  const { firebaseReady, syncError, retry: retrySync } = useFirebaseSync();
 
   // Mantém o resto do arquivo funcionando sem reescrever cada `user.uid`/`user.email`:
   // aqui simulamos o formato do antigo objeto `user` do Firebase, mas value vem do Clerk.
@@ -535,8 +614,9 @@ export default function StudyCompanionApp() {
     if (notifPermission !== 'granted' || notifications.length === 0) return;
 
     // Evita repetir o mesmo aviso várias vezes no mesmo dia: guardamos
-    // no localStorage quais IDs já foram notificados hoje.
-    const todayKey = new Date().toISOString().slice(0, 10);
+    // no localStorage quais IDs já foram notificados hoje (usando fuso local).
+    const now = new Date();
+    const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     const storageKey = `studyapp_notified_${todayKey}`;
     let alreadyNotified = [];
     try {
@@ -586,6 +666,21 @@ export default function StudyCompanionApp() {
     }
   };
 
+  const toggleTaskDone = async (task) => {
+    if (!user || !task) return;
+    const targetUid = user.uid || 'estudante-demo';
+    const newStatus = task.status === 'concluído' ? 'pendente' : 'concluído';
+
+    setTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: newStatus } : t));
+
+    try {
+      await updateDoc(doc(db, 'users', targetUid, 'tasks', task.id), { status: newStatus });
+    } catch (error) {
+      console.error(error);
+      showActionError('Não foi possível salvar. Verifique sua conexão.');
+    }
+  };
+
   const toggleExamTopic = async (examId, topicIndex) => {
     if (!user) return;
     const exam = exams.find(e => e.id === examId);
@@ -612,6 +707,19 @@ export default function StudyCompanionApp() {
 
     const targetUid = user.uid || 'estudante-demo';
 
+    // Guarda cópia do estado anterior para rollback em caso de falha
+    const previousClasses = classes;
+    const previousTasks = tasks;
+    const previousExams = exams;
+    const previousGrades = grades;
+
+    const restoreState = () => {
+      if (type === 'classes') setClasses(previousClasses);
+      if (type === 'tasks') setTasks(previousTasks);
+      if (type === 'exams') setExams(previousExams);
+      if (type === 'grades') setGrades(previousGrades);
+    };
+
     // Exclusão de tudo em lote
     if (id === 'ALL') {
       if (type === 'classes') setClasses([]);
@@ -623,6 +731,7 @@ export default function StudyCompanionApp() {
         await clearCollection(targetUid, type);
       } catch (error) {
         console.error(error);
+        restoreState();
         showActionError('Não foi possível excluir os itens. Verifique sua conexão.');
       }
       return;
@@ -638,23 +747,28 @@ export default function StudyCompanionApp() {
       await deleteDoc(doc(db, 'users', targetUid, type, id));
     } catch (error) {
       console.error(error);
-      showActionError('Não foi possível excluir. Verifique sua conexão.');
+      restoreState();
+      showActionError('Não foi possível excluir o item. Verifique sua conexão.');
     }
   };
 
-  // Agrupa as notas por matéria e calcula a média ponderada de cada uma
+  // Agrupa as notas por matéria e calcula a média ponderada de cada uma (unindo grafias diferentes)
   const gradesBySubject = useMemo(() => {
-    const groups = {};
+    const groups = new Map();
     grades.forEach(g => {
-      if (!groups[g.subject]) groups[g.subject] = [];
-      groups[g.subject].push(g);
+      const raw = String(g.subject || '').trim();
+      const norm = normalizeSubjectName(raw) || 'sem-materia';
+      if (!groups.has(norm)) {
+        groups.set(norm, { displayName: raw || 'Sem Matéria', items: [] });
+      }
+      groups.get(norm).items.push(g);
     });
-    return Object.entries(groups).map(([subject, items]) => {
+    return Array.from(groups.values()).map(({ displayName, items }) => {
       const totalWeight = items.reduce((sum, g) => sum + (Number(g.weight) || 1), 0);
       const weightedSum = items.reduce((sum, g) => sum + (Number(g.value) || 0) * (Number(g.weight) || 1), 0);
       const average = totalWeight > 0 ? weightedSum / totalWeight : 0;
-      return { subject, items, average };
-    }).sort((a, b) => a.subject.localeCompare(b.subject));
+      return { subject: displayName, items, average };
+    }).sort((a, b) => a.subject.localeCompare(b.subject, 'pt-BR'));
   }, [grades]);
 
   // Gera e baixa um arquivo CSV a partir de uma lista de linhas (arrays de valores)
@@ -705,7 +819,12 @@ export default function StudyCompanionApp() {
 
   const handleImportJSON = (event) => {
     const file = event.target.files?.[0];
-    if (!file || !user) return;
+    if (!file) return;
+    if (!user) {
+      openSignIn();
+      event.target.value = '';
+      return;
+    }
 
     // Limite rígido de tamanho de arquivo: máximo 2 MB
     const MAX_FILE_SIZE = 2 * 1024 * 1024;
@@ -743,6 +862,14 @@ export default function StudyCompanionApp() {
         const diasValidos = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta"];
         const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
 
+        const add45Minutes = (timeStr) => {
+          const [h, m] = (timeStr || '07:30').split(':').map(Number);
+          const totalMinutes = ((h || 0) * 60 + (m || 0) + 45) % (24 * 60);
+          const newH = Math.floor(totalMinutes / 60);
+          const newM = totalMinutes % 60;
+          return `${String(newH).padStart(2, '0')}:${String(newM).padStart(2, '0')}`;
+        };
+
         const sanitizeText = (txt, maxLen = 100) => {
           if (typeof txt !== 'string') return '';
           return txt.replace(/[<>]/g, '').trim().slice(0, maxLen);
@@ -750,17 +877,24 @@ export default function StudyCompanionApp() {
 
         const batch = writeBatch(db);
         const classesRef = collection(db, 'users', user.uid, 'classes');
+        const existingKeys = new Set(
+          classes.map(c => `${normalizeSubjectName(c.subject)}|${c.dayOfWeek}|${c.startTime}`)
+        );
+        let invalidRows = 0;
+        let skipped = 0;
         let count = 0;
         const newClassesList = [];
 
         for (const row of data) {
           if (!row || typeof row !== 'object') continue;
           const rawStartTime = typeof row["Horário"] === 'string' ? row["Horário"].trim() : '';
-          if (!rawStartTime) continue;
+          if (!rawStartTime || !timeRegex.test(rawStartTime)) {
+            invalidRows++;
+            continue;
+          }
 
-          // Valida formato de hora (ex: 13:00)
-          const startTime = timeRegex.test(rawStartTime) ? rawStartTime : '07:30';
-          const endTime = timeMap[startTime] || '18:00';
+          const startTime = rawStartTime;
+          const endTime = timeMap[startTime] || add45Minutes(startTime);
 
           for (const dia of diasValidos) {
             const rawSubject = row[dia];
@@ -781,13 +915,24 @@ export default function StudyCompanionApp() {
 
               if (!safeSubject) continue;
 
+              const classKey = `${normalizeSubjectName(safeSubject)}|${dia}|${startTime}`;
+              if (existingKeys.has(classKey)) {
+                skipped++;
+                continue;
+              }
+              existingKeys.add(classKey);
+
+              const charSum = normalizeSubjectName(safeSubject).split('').reduce((sum, char) => sum + char.charCodeAt(0), 0);
+              const colorIndex = charSum % COLORS.length;
+              const color = COLORS[colorIndex].value;
+
               const classData = {
                 subject: safeSubject,
                 teacher: safeTeacher,
                 dayOfWeek: dia,
                 startTime: startTime,
                 endTime: endTime,
-                color: "bg-blue-500"
+                color
               };
 
               const newDocRef = doc(classesRef);
@@ -802,6 +947,11 @@ export default function StudyCompanionApp() {
           if (count >= 500) break;
         }
 
+        if (count === 0 && skipped > 0 && invalidRows === 0) {
+          showActionNotice('Todas as aulas deste arquivo já estão no seu horário.');
+          return;
+        }
+
         if (count === 0) {
           showActionError('Nenhuma aula válida com horário e matéria foi encontrada no arquivo.');
           return;
@@ -811,7 +961,11 @@ export default function StudyCompanionApp() {
 
         // Atualização otimista na tela
         setClasses(prev => [...prev, ...newClassesList]);
-        showActionNotice(`🎉 ${count} aula(s) importada(s) com sucesso para o seu usuário!`);
+        const extraNotes = [];
+        if (skipped > 0) extraNotes.push(`${skipped} já existiam e foram ignoradas`);
+        if (invalidRows > 0) extraNotes.push(`${invalidRows} linha(s) com horário inválido ignorada(s)`);
+        const extraText = extraNotes.length > 0 ? ` (${extraNotes.join(', ')})` : '';
+        showActionNotice(`🎉 ${count} aula(s) importada(s)${extraText}.`);
         
       } catch (error) {
         console.error("Erro ao importar horários:", error.message || error);
@@ -927,7 +1081,7 @@ export default function StudyCompanionApp() {
                     <p className="flex justify-between"><span className="text-slate-400">Prof:</span> <span className="truncate ml-2">{c.teacher}</span></p>
                     {/* Linha da Sala foi completamente removida daqui */}
                   </div>
-                  <div className="absolute top-2 right-2 flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="absolute top-2 right-2 flex items-center space-x-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                     <button onClick={() => { setEditingClass(c); setIsSavingItem(false); setClassModalOpen(true); }} className="text-slate-400 hover:text-yellow-400">
                       <Edit2 className="w-4 h-4"/>
                     </button>
@@ -1031,7 +1185,7 @@ export default function StudyCompanionApp() {
                 Entrega: {(task.dueDate || '').split('-').reverse().join('/')}
               </div>
 
-              {totalSteps > 0 && (
+              {totalSteps > 0 ? (
                 <div className="mt-4 border-t border-slate-700 pt-4">
                   <div className="flex justify-between text-xs text-slate-400 mb-2">
                     <span>Progresso do Projeto</span>
@@ -1049,6 +1203,27 @@ export default function StudyCompanionApp() {
                     ))}
                   </div>
                 </div>
+              ) : (
+                <div className="mt-4 border-t border-slate-700 pt-3 flex justify-end">
+                  <button
+                    onClick={() => toggleTaskDone(task)}
+                    className={`text-xs font-semibold px-3 py-1.5 rounded-lg border transition-colors flex items-center ${
+                      task.status === 'concluído'
+                        ? 'bg-slate-700/60 hover:bg-slate-700 text-slate-300 border-slate-600'
+                        : 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                    }`}
+                  >
+                    {task.status === 'concluído' ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Reabrir
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" /> Marcar como concluído
+                      </>
+                    )}
+                  </button>
+                </div>
               )}
             </div>
           );
@@ -1061,13 +1236,32 @@ export default function StudyCompanionApp() {
   };
 
   const renderExams = () => {
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
     const filteredExams = [...exams]
       .filter(e => {
         const q = examSearch.trim().toLowerCase();
         if (!q) return true;
         return (e.subject || '').toLowerCase().includes(q) || (e.title || '').toLowerCase().includes(q);
       })
-      .sort((a,b) => new Date(a.date || 0) - new Date(b.date || 0));
+      .sort((a, b) => {
+        const dateA = a.date || '';
+        const dateB = b.date || '';
+        const isFutureOrTodayA = dateA >= todayStr;
+        const isFutureOrTodayB = dateB >= todayStr;
+
+        if (isFutureOrTodayA && !isFutureOrTodayB) return -1;
+        if (!isFutureOrTodayA && isFutureOrTodayB) return 1;
+
+        if (isFutureOrTodayA && isFutureOrTodayB) {
+          // Futuras ou de hoje: data crescente
+          return dateA.localeCompare(dateB);
+        } else {
+          // Já passadas: data decrescente (mais recente primeiro)
+          return dateB.localeCompare(dateA);
+        }
+      });
 
     return (
     <div className="space-y-4">
@@ -1173,12 +1367,22 @@ export default function StudyCompanionApp() {
     tasks.forEach(t => {
       if (!t.dueDate) return;
       if (!eventsByDay[t.dueDate]) eventsByDay[t.dueDate] = [];
-      eventsByDay[t.dueDate].push({ kind: 'task', label: t.title, subject: t.subject });
+      eventsByDay[t.dueDate].push({
+        kind: 'task',
+        label: t.title,
+        subject: t.subject,
+        done: t.status === 'concluído'
+      });
     });
     exams.forEach(ex => {
       if (!ex.date) return;
       if (!eventsByDay[ex.date]) eventsByDay[ex.date] = [];
-      eventsByDay[ex.date].push({ kind: 'exam', label: ex.title || 'Prova', subject: ex.subject });
+      eventsByDay[ex.date].push({
+        kind: 'exam',
+        label: ex.title || 'Prova',
+        subject: ex.subject,
+        done: false
+      });
     });
 
     const todayKey = toDateKey(new Date());
@@ -1221,6 +1425,13 @@ export default function StudyCompanionApp() {
               const isToday = dateKey === todayKey;
               const isSelected = dateKey === selectedCalendarDay;
 
+              const allTasksDone = dayEvents.length > 0 && dayEvents.every(e => e.kind === 'task' && e.done);
+              const dotColor = allTasksDone
+                ? 'bg-slate-500'
+                : dayEvents.some(e => e.kind === 'exam')
+                  ? 'bg-purple-400'
+                  : 'bg-orange-400';
+
               return (
                 <button
                   key={idx}
@@ -1230,7 +1441,7 @@ export default function StudyCompanionApp() {
                 >
                   {day}
                   {dayEvents.length > 0 && !isSelected && (
-                    <span className={`absolute bottom-1 w-1.5 h-1.5 rounded-full ${dayEvents.some(e => e.kind === 'exam') ? 'bg-purple-400' : 'bg-orange-400'}`}></span>
+                    <span className={`absolute bottom-1 w-1.5 h-1.5 rounded-full ${dotColor}`}></span>
                   )}
                 </button>
               );
@@ -1244,10 +1455,14 @@ export default function StudyCompanionApp() {
             <div className="space-y-2">
               {selectedEvents.map((ev, i) => (
                 <div key={i} className="flex items-center bg-slate-700/50 p-3 rounded-xl">
-                  {ev.kind === 'exam' ? <BookOpen className="w-4 h-4 mr-2 text-purple-400 flex-shrink-0" /> : <CheckSquare className="w-4 h-4 mr-2 text-orange-400 flex-shrink-0" />}
+                  {ev.kind === 'exam' ? (
+                    <BookOpen className="w-4 h-4 mr-2 text-purple-400 flex-shrink-0" />
+                  ) : (
+                    <CheckSquare className={`w-4 h-4 mr-2 flex-shrink-0 ${ev.done ? 'text-emerald-400' : 'text-orange-400'}`} />
+                  )}
                   <div>
-                    <p className="text-sm text-white font-medium">{ev.label}</p>
-                    <p className="text-xs text-slate-400">{ev.subject} • {ev.kind === 'exam' ? 'Prova' : 'Trabalho'}</p>
+                    <p className={`text-sm text-white font-medium ${ev.done ? 'line-through opacity-60' : ''}`}>{ev.label}</p>
+                    <p className="text-xs text-slate-400">{ev.subject} • {ev.kind === 'exam' ? 'Prova' : (ev.done ? 'Trabalho concluído' : 'Trabalho')}</p>
                   </div>
                 </div>
               ))}
@@ -1330,13 +1545,13 @@ export default function StudyCompanionApp() {
       
       <div className="flex space-x-4 mb-8">
         <button 
-          onClick={() => { setPomodoroMode('work'); setTimeLeft(25 * 60); setIsTimerRunning(false); }}
+          onClick={() => { setPomodoroMode('work'); setTimeLeft(25 * 60); setIsTimerRunning(false); endAtRef.current = null; }}
           className={`px-6 py-2 rounded-full font-bold transition-colors ${pomodoroMode === 'work' ? 'bg-orange-500 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
         >
           Trabalho (25m)
         </button>
         <button 
-          onClick={() => { setPomodoroMode('break'); setTimeLeft(5 * 60); setIsTimerRunning(false); }}
+          onClick={() => { setPomodoroMode('break'); setTimeLeft(5 * 60); setIsTimerRunning(false); endAtRef.current = null; }}
           className={`px-6 py-2 rounded-full font-bold transition-colors ${pomodoroMode === 'break' ? 'bg-emerald-500 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
         >
           Pausa (5m)
@@ -1349,13 +1564,21 @@ export default function StudyCompanionApp() {
 
       <div className="flex space-x-4">
         <button 
-          onClick={() => setIsTimerRunning(!isTimerRunning)}
+          onClick={() => {
+            if (isTimerRunning) {
+              setIsTimerRunning(false);
+              endAtRef.current = null;
+            } else {
+              endAtRef.current = Date.now() + timeLeft * 1000;
+              setIsTimerRunning(true);
+            }
+          }}
           className={`w-16 h-16 rounded-full flex items-center justify-center text-white shadow-lg transition-transform hover:scale-105 active:scale-95 ${isTimerRunning ? 'bg-red-500' : 'bg-blue-600'}`}
         >
           {isTimerRunning ? <Pause className="w-8 h-8" fill="currentColor" /> : <Play className="w-8 h-8 pl-1" fill="currentColor" />}
         </button>
         <button 
-          onClick={() => { setIsTimerRunning(false); setTimeLeft(pomodoroMode === 'work' ? 25 * 60 : 5 * 60); }}
+          onClick={() => { setIsTimerRunning(false); endAtRef.current = null; setTimeLeft(pomodoroMode === 'work' ? 25 * 60 : 5 * 60); }}
           className="w-16 h-16 rounded-full flex items-center justify-center text-slate-400 bg-slate-800 hover:bg-slate-700 shadow-lg transition-transform hover:scale-105 active:scale-95"
         >
           <RefreshCw className="w-6 h-6" />
@@ -1364,7 +1587,20 @@ export default function StudyCompanionApp() {
     </div>
   );
 
-  if (syncError) return <div className="min-h-screen bg-slate-900 flex items-center justify-center text-red-400 text-center px-6">{syncError}</div>;
+  if (syncError) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center text-center px-6">
+        <AlertCircle className="w-12 h-12 text-red-400 mb-4" />
+        <p className="text-red-400 text-base max-w-md mb-6">{syncError}</p>
+        <button
+          onClick={retrySync}
+          className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-6 py-3 rounded-xl transition-colors shadow-lg"
+        >
+          Tentar novamente
+        </button>
+      </div>
+    );
+  }
   if (loading) return <div className="min-h-screen bg-slate-900 flex items-center justify-center text-yellow-500">Carregando...</div>;
 
   return (
@@ -1380,7 +1616,7 @@ export default function StudyCompanionApp() {
             <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title="Alternar tema" className="p-2 text-slate-400 hover:text-white transition-colors bg-slate-700/50 rounded-full">
               {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
             </button>
-            <div className="relative">
+            <div ref={notificationsContainerRef} className="relative">
               <button onClick={() => setNotificationsOpen(!isNotificationsOpen)} className="p-2 text-slate-400 hover:text-white transition-colors bg-slate-700/50 rounded-full">
                 <Bell className="w-5 h-5" />
                 {notifications.length > 0 && <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-slate-800"></span>}
@@ -1519,6 +1755,8 @@ export default function StudyCompanionApp() {
               }
             } catch (error) {
               console.error(error);
+              setEditingClass({ id: currentId, ...data });
+              setClassModalOpen(true);
               showActionError('Não foi possível salvar a aula. Verifique sua conexão.');
             }
           }}
@@ -1557,9 +1795,11 @@ export default function StudyCompanionApp() {
               return { title, done: existing ? existing.done : false };
             });
             const allDone = steps.length > 0 && steps.every(s => s.done);
-            const status = editingTask
-              ? (allDone ? 'concluído' : (steps.some(s => s.done) ? 'em andamento' : 'pendente'))
-              : 'pendente';
+            const status = steps.length === 0
+              ? (editingTask?.status || 'pendente')
+              : (editingTask
+                  ? (allDone ? 'concluído' : (steps.some(s => s.done) ? 'em andamento' : 'pendente'))
+                  : 'pendente');
 
             const data = {
               title: String(fd.get('title') || '').trim(),
@@ -1587,6 +1827,8 @@ export default function StudyCompanionApp() {
               }
             } catch (error) {
               console.error(error);
+              setEditingTask({ id: currentId, ...data });
+              setTaskModalOpen(true);
               showActionError('Não foi possível salvar o trabalho. Verifique sua conexão.');
             }
           }}
@@ -1651,6 +1893,8 @@ export default function StudyCompanionApp() {
               }
             } catch (error) {
               console.error(error);
+              setEditingExam({ id: currentId, ...data });
+              setExamModalOpen(true);
               showActionError('Não foi possível salvar a prova. Verifique sua conexão.');
             }
           }}
@@ -1705,11 +1949,17 @@ export default function StudyCompanionApp() {
               }
             } catch (error) {
               console.error(error);
+              setEditingGrade({ id: currentId, ...data });
+              setGradeModalOpen(true);
               showActionError('Não foi possível salvar a nota. Verifique sua conexão.');
             }
           }}
         >
-          <input name="subject" placeholder="Matéria (ex: Matemática)" defaultValue={editingGrade?.subject} required maxLength={100} className="w-full bg-slate-700 text-white rounded-xl p-3 mb-3" />
+          <SubjectSelect
+            classes={classes}
+            initialSubject={editingGrade?.subject}
+            placeholder="Matéria (ex: Matemática)"
+          />
           <input name="title" placeholder="Avaliação (ex: Prova 1º Bimestre)" defaultValue={editingGrade?.title} required maxLength={150} className="w-full bg-slate-700 text-white rounded-xl p-3 mb-3" />
           <div className="flex space-x-3 mb-4">
             <input name="value" type="number" step="0.1" min="0" max="10" placeholder="Nota (0 a 10)" defaultValue={editingGrade?.value} required className="w-1/2 bg-slate-700 text-white rounded-xl p-3" />
@@ -1734,7 +1984,7 @@ function NavButton({ active, onClick, icon, label }) {
 function GenericModal({ title, children, onClose, onSubmit, submitting }) {
   return (
     <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
-      <div className="bg-slate-800 rounded-3xl p-6 w-full max-w-md border border-slate-700 shadow-2xl relative">
+      <div className="bg-slate-800 rounded-3xl p-6 w-full max-w-md border border-slate-700 shadow-2xl relative max-h-[90vh] overflow-y-auto">
         <button onClick={onClose} className="absolute top-4 right-4 text-slate-400 hover:text-white"><X className="w-6 h-6"/></button>
         <h2 className="text-2xl font-bold text-white mb-6">{title}</h2>
         <form onSubmit={onSubmit}>

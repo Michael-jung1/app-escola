@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ClerkProvider } from './lib/clerkAuth.jsx'
+import ErrorBoundary from './components/ErrorBoundary.jsx'
 import './index.css'
 import App from './App.jsx'
 
@@ -9,7 +10,9 @@ const clerkPublishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <ClerkProvider publishableKey={clerkPublishableKey}>
-      <App />
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
     </ClerkProvider>
   </StrictMode>,
 )
